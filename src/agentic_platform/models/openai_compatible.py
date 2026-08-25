@@ -9,14 +9,10 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from agentic_platform.domain.models import CodingContext
-from agentic_platform.models.gateway import CodingModel
+from agentic_platform.models.gateway import CodingModel, CodingModelError, FailureContext
 from agentic_platform.models.prompt import build_coding_messages, build_repair_messages
 from agentic_platform.models.settings import OpenAICompatibleSettings
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
-
-
-class CodingModelError(RuntimeError):
-    """Base error raised by the external coding-model adapter."""
 
 
 class ModelTimeoutError(CodingModelError):
@@ -104,7 +100,7 @@ class OpenAICompatibleCodingModel(CodingModel):
         task: DevelopmentTask,
         context: CodingContext,
         previous_change: GeneratedChange,
-        failure_context: object,
+        failure_context: FailureContext,
     ) -> GeneratedChange:
         return self._request_change(build_repair_messages(task, context, previous_change, failure_context))
 

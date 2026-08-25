@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from agentic_platform.domain.models import CodingContext
+from agentic_platform.models.gateway import FailureContext
 from agentic_platform.tasks.types import DevelopmentTask, GeneratedChange
 
 _SYSTEM_PROMPT = """You generate repository changes from a bounded coding context.
@@ -75,7 +76,7 @@ def build_repair_messages(
     task: DevelopmentTask,
     context: CodingContext,
     previous_change: GeneratedChange,
-    failure_context: object,
+    failure_context: FailureContext,
 ) -> list[dict[str, str]]:
     """Build a bounded repair request without relying on provider-specific tools."""
     request_context = json.loads(build_coding_messages(task, context)[1]["content"])

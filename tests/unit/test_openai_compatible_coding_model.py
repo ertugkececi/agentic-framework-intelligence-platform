@@ -23,7 +23,7 @@ from agentic_platform.models.openai_compatible import (
     TransportResponse,
     parse_generated_change,
 )
-from agentic_platform.orchestration.graph import FailureContext
+from agentic_platform.models.gateway import FailureContext
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange, OperationSpec, ParameterSpec
 
 

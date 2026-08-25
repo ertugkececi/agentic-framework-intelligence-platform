@@ -91,7 +91,11 @@ def test_source_index_tokenizes_camel_and_snake_names_and_returns_task_specific_
     finally:
         store.close()
 
-    assert [(candidate.attribute, candidate.class_name) for candidate in context.unresolved_dependencies] == [("payment_client", "PaymentClient")]
+    assert [(candidate.attribute, candidate.class_name) for candidate in context.unresolved_dependencies] == [
+        ("mapper", "OrderMapper"),
+        ("payment_client", "PaymentClient"),
+        ("repository", "OrderRepository"),
+    ]
     assert context.unresolved_dependencies[0].reasons
 
 
@@ -106,26 +110,13 @@ def test_graph_retrieval_ranks_payment_example_for_payment_task(tmp_path: Path):
     assert result["coding_context"].examples[0].score > 0
 
 
-def test_graph_retrieval_keeps_pattern_matched_storage_as_unresolved_context(tmp_path: Path):
-    result = run_poc(
-        tmp_path,
-        "sample_customer_repo_c",
-        "Create PaymentHistoryService with method list_history(customer_id)",
-    )
-
-    storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
-    assert storage.class_name is None
-    assert storage.type_pattern == "*Storage"
-    assert not [item for item in result["coding_context"].unresolved_dependencies if item.attribute == "storage"]
-
-
-def test_graph_retrieval_excludes_storage_candidate_that_misses_type_pattern(tmp_path: Path):
+def test_development_run_keeps_matching_pattern_candidates_and_rules_store_read_only(tmp_path: Path):
     root = Path(__file__).resolve().parents[2]
     repository = tmp_path / "customer-repo"
     shutil.copytree(root / "examples/sample_customer_repo_c", repository)
     FrameworkLearningService().learn(tmp_path, repository)
-    payment_service = repository / "app/payment_service.py"
-    payment_service.write_text(payment_service.read_text().replace("PaymentStorage", "PaymentConverter"))
+    database_path = FrameworkLearningService.database_path(tmp_path)
+    rules_before = database_path.read_bytes()
 
     passed = CommandResult(True, ("check",), "passed")
     result = DevelopmentService(
@@ -135,12 +126,47 @@ def test_graph_retrieval_excludes_storage_candidate_that_misses_type_pattern(tmp
     ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)")
 
     assert [(item.attribute, item.class_name) for item in result["coding_context"].unresolved_dependencies] == [
-        ("storage", "PaymentConverter")
+        ("converter", "PaymentConverter"),
+        ("storage", "PaymentStorage"),
+    ]
+    candidates = {item.attribute: item for item in result["coding_context"].unresolved_dependencies}
+    assert "matched type pattern: *Storage" in candidates["storage"].reasons
+    assert "matched type pattern: *Converter" in candidates["converter"].reasons
+    assert database_path.read_bytes() == rules_before
+
+
+def test_development_run_excludes_candidate_that_misses_attribute_type_pattern(tmp_path: Path):
+    root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "customer-repo"
+    shutil.copytree(root / "examples/sample_customer_repo_c", repository)
+    FrameworkLearningService().learn(tmp_path, repository)
+    payment_service = repository / "app/payment_service.py"
+    payment_service.write_text(payment_service.read_text().replace("self.storage=PaymentStorage()", "self.storage=PaymentConverter()"))
+
+    passed = CommandResult(True, ("check",), "passed")
+    result = DevelopmentService(
+        build_runner=lambda repository, grant: passed,
+        test_runner=lambda repository, grant: passed,
+        validator=lambda path, rules: ValidationReport(True),
+    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)")
+
+    assert [(item.attribute, item.class_name) for item in result["coding_context"].unresolved_dependencies] == [
+        ("converter", "PaymentConverter"),
     ]
 
 
-def test_graph_retrieval_keeps_tied_storage_candidates_unresolved(tmp_path: Path):
-    result = run_poc(tmp_path, "sample_customer_repo_c", "Create StorageService")
+def test_development_run_preserves_ambiguous_pattern_dependencies(tmp_path: Path):
+    root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "customer-repo"
+    shutil.copytree(root / "examples/sample_customer_repo_c", repository)
+    FrameworkLearningService().learn(tmp_path, repository)
+
+    passed = CommandResult(True, ("check",), "passed")
+    result = DevelopmentService(
+        build_runner=lambda repository, grant: passed,
+        test_runner=lambda repository, grant: passed,
+        validator=lambda path, rules: ValidationReport(True),
+    ).run(tmp_path, repository, "Create StorageService")
 
     storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
     assert storage.class_name is None

@@ -155,8 +155,11 @@ def _unresolved_candidates(
         for dependency in entry.dependencies:
             if dependency.attribute not in resolved_attributes:
                 pattern = type_patterns.get(dependency.attribute)
-                if pattern is not None and fnmatchcase(dependency.class_name, pattern):
+                if pattern is not None and not fnmatchcase(dependency.class_name, pattern):
                     continue
+                candidate_reasons = reasons
+                if pattern is not None:
+                    candidate_reasons = (*reasons, f"matched type pattern: {pattern}")
                 candidates.append(
                     UnresolvedDependencyCandidate(
                         entry.source_path,
@@ -166,7 +169,7 @@ def _unresolved_candidates(
                         dependency.methods,
                         dependency.constructor_arguments,
                         score,
-                        reasons,
+                        candidate_reasons,
                     )
                 )
     return tuple(sorted(candidates, key=lambda item: (item.source_path, item.attribute, item.class_name)))

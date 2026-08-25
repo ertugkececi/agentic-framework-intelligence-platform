@@ -2,13 +2,24 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import TYPE_CHECKING, Protocol
+from dataclasses import dataclass
+from typing import Protocol
 
 from agentic_platform.domain.models import CodingContext
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
 
-if TYPE_CHECKING:
-    from agentic_platform.orchestration.graph import FailureContext
+class CodingModelError(RuntimeError):
+    """Provider-neutral boundary for failures while producing a coding change."""
+
+
+@dataclass(frozen=True)
+class FailureContext:
+    """Compact, bounded evidence passed from a failed check to a repair attempt."""
+
+    stage: str
+    attempt: int
+    command: tuple[str, ...]
+    output: str
 
 
 class CodingModel(Protocol):

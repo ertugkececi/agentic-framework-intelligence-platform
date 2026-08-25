@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import shutil
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TypedDict
 
@@ -16,7 +15,7 @@ from agentic_platform.domain.models import (
 )
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
 from agentic_platform.framework_learning.learner import FrameworkLearner
-from agentic_platform.models.gateway import CodingModel, DeterministicPythonCodingModel
+from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
 from agentic_platform.retrieval.context import retrieve_service_context
 from agentic_platform.security.policy import poc_grant
 from agentic_platform.tasks.parser import TaskParseError, parse_development_task
@@ -28,16 +27,6 @@ from agentic_platform.validation.compliance import validate_service
 
 DEFAULT_RETRY_BUDGET = 2
 DEFAULT_MAX_FAILURE_OUTPUT = 2_000
-
-
-@dataclass(frozen=True)
-class FailureContext:
-    """Compact, bounded evidence passed from a failed check to a repair attempt."""
-
-    stage: str
-    attempt: int
-    command: tuple[str, ...]
-    output: str
 
 
 class DevelopmentState(TypedDict, total=False):
@@ -97,6 +86,7 @@ class DevelopmentService:
         if max_failure_output < 1:
             raise ValueError("max_failure_output must be positive")
         self._model_factory = model_factory
+        self._model: CodingModel | None = None
         self._build_runner = build_runner
         self._test_runner = test_runner
         self._validator = validator
@@ -111,18 +101,22 @@ class DevelopmentService:
     ) -> DevelopmentState:
         if retry_budget < 0:
             raise ValueError("retry_budget must not be negative")
-        return self.build_graph().invoke(
-            {
-                "workspace": str(workspace),
-                "repository": str(repository),
-                "task": task,
-                "retry_count": 0,
-                "retry_budget": retry_budget,
-                "failure_history": (),
-                "events": [],
-                "status": "running",
-            }
-        )
+        self._model = None
+        try:
+            return self.build_graph().invoke(
+                {
+                    "workspace": str(workspace),
+                    "repository": str(repository),
+                    "task": task,
+                    "retry_count": 0,
+                    "retry_budget": retry_budget,
+                    "failure_history": (),
+                    "events": [],
+                    "status": "running",
+                }
+            )
+        finally:
+            self._model = None
 
     def build_graph(self):
         graph = StateGraph(DevelopmentState)
@@ -145,7 +139,7 @@ class DevelopmentService:
         graph.add_edge(START, "parse")
         graph.add_conditional_edges("parse", self._after_parse, {"retrieve": "retrieve", "final": "final"})
         graph.add_conditional_edges("retrieve", self._after_retrieve, {"generate": "generate", "final": "final"})
-        graph.add_edge("generate", "apply")
+        graph.add_conditional_edges("generate", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_edge("apply", "build")
         graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
         graph.add_conditional_edges("build_failure", self._after_failure, {"repair": "repair", "final": "final"})
@@ -153,7 +147,7 @@ class DevelopmentService:
         graph.add_conditional_edges("test_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("compliance", self._after_compliance, {"final": "final", "failure": "compliance_failure"})
         graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
-        graph.add_edge("repair", "apply")
+        graph.add_conditional_edges("repair", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_edge("final", END)
         return graph.compile()
 
@@ -197,21 +191,36 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "generate"
 
     def _generate(self, state: DevelopmentState) -> dict[str, object]:
-        change = self._model_factory().generate_change(state["specification"], state["coding_context"])
+        try:
+            change = self._current_model().generate_change(state["specification"], state["coding_context"])
+        except CodingModelError:
+            return {"status": "failed", **self._event(state, "model_generation_failed")}
         return {"generated_change": change, **self._event(state, "change_generated")}
 
     def _repair(self, state: DevelopmentState) -> dict[str, object]:
-        change = self._model_factory().repair_change(
-            state["specification"],
-            state["coding_context"],
-            state["generated_change"],
-            state["failure_context"],
-        )
+        try:
+            change = self._current_model().repair_change(
+                state["specification"],
+                state["coding_context"],
+                state["generated_change"],
+                state["failure_context"],
+            )
+        except CodingModelError:
+            return {"status": "failed", **self._event(state, "model_repair_failed")}
         return {
             "generated_change": change,
             "retry_count": state["retry_count"] + 1,
             **self._event(state, "change_repaired"),
         }
+
+    def _current_model(self) -> CodingModel:
+        if self._model is None:
+            self._model = self._model_factory()
+        return self._model
+
+    @staticmethod
+    def _after_model(state: DevelopmentState) -> str:
+        return "final" if state.get("status") == "failed" else "apply"
 
     def _apply(self, state: DevelopmentState) -> dict[str, object]:
         files = apply_change(state["generated_change"], Path(state["repository"]), poc_grant())
