@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import sqlite3
 from pathlib import Path
 
 from agentic_platform.domain.models import Evidence, FrameworkRule
+
+
+def repository_fingerprint(repository: Path) -> str:
+    """Return a stable local-repository identity without storing its path."""
+    canonical_path = os.path.normcase(str(repository.resolve()))
+    return hashlib.sha256(canonical_path.encode("utf-8")).hexdigest()
 
 
 class SQLiteKnowledgeStore:
@@ -20,11 +28,21 @@ class SQLiteKnowledgeStore:
               discovered_at TEXT NOT NULL, evidence_json TEXT NOT NULL, metadata_json TEXT NOT NULL
             )
         """)
+        self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS framework_knowledge_metadata (
+              id INTEGER PRIMARY KEY CHECK (id = 1), repository_fingerprint TEXT NOT NULL
+            )
+        """)
         self.connection.commit()
 
-    def replace_rules(self, rules: list[FrameworkRule]) -> None:
+    def replace_rules(self, rules: list[FrameworkRule], repository_identity: str | None = None) -> None:
         with self.connection:
             self.connection.execute("DELETE FROM framework_rule")
+            if repository_identity is not None:
+                self.connection.execute(
+                    "INSERT OR REPLACE INTO framework_knowledge_metadata (id, repository_fingerprint) VALUES (1, ?)",
+                    (repository_identity,),
+                )
             self.connection.executemany(
                 """INSERT INTO framework_rule
                 (kind, expected_value, confidence, support_count, conflict_count, origin, status, framework_version, discovered_at, evidence_json, metadata_json)
@@ -36,6 +54,12 @@ class SQLiteKnowledgeStore:
                     json.dumps(dict(rule.metadata)),
                 ) for rule in rules],
             )
+
+    def repository_fingerprint(self) -> str | None:
+        row = self.connection.execute(
+            "SELECT repository_fingerprint FROM framework_knowledge_metadata WHERE id = 1"
+        ).fetchone()
+        return row["repository_fingerprint"] if row else None
 
     def active_rules_for(self, prefix: str) -> list[FrameworkRule]:
         rows = self.connection.execute(

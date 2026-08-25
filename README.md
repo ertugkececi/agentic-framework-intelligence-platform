@@ -136,9 +136,21 @@ uv pip install --python .venv/Scripts/python.exe 'langgraph>=0.2,<1' pytest
 # Tüm acceptance testleri
 PYTHONPATH=src .venv/Scripts/python.exe -m pytest -q
 
-# Varsayılan Framework A demo
-PYTHONPATH=src .venv/Scripts/python.exe -m agentic_platform.cli --workspace .poc-run
+# Offline deterministic quickstart (boş bir output workspace ile)
+mkdir -p .poc-run && cp -R examples/sample_customer_repo .poc-run/customer-repo && PYTHONPATH=src .venv/Scripts/python.exe -m agentic_platform.cli run --repository .poc-run/customer-repo --workspace .poc-run --task 'Create CustomerAccountService with method get_account(account_id)' --deterministic
 ```
+
+CLI lifecycle komutları explicit’tir ve terminale tek satır JSON outcome yazar:
+
+```bash
+# Bir kez öğren ve bilgiyi .poc-run/framework_knowledge.sqlite içine kaydet
+PYTHONPATH=src .venv/Scripts/python.exe -m agentic_platform.cli learn --repository .poc-run/customer-repo --workspace .poc-run --deterministic
+
+# Yalnızca mevcut bilgiyi kullanarak geliştir (öğrenme yapmaz)
+PYTHONPATH=src .venv/Scripts/python.exe -m agentic_platform.cli develop --repository .poc-run/customer-repo --workspace .poc-run --task 'Create PaymentHistoryService with method list_history(customer_id)' --deterministic
+```
+
+`run`, operator kolaylığı için `learn` ve `develop` fazlarını sıralı olarak birleştirir. `develop` için task zorunludur ve knowledge database yoksa nonzero JSON hata ile biter. CLI yalnızca local repository path’lerini kabul eder; deterministic modda network endpoint’i çağırmaz.
 
 Kalıcı çalıştırma artefact’ları:
 

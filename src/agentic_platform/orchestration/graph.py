@@ -13,7 +13,7 @@ from agentic_platform.domain.models import (
     FrameworkRule,
     ValidationReport,
 )
-from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
+from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
 from agentic_platform.retrieval.context import retrieve_service_context
@@ -65,7 +65,7 @@ class FrameworkLearningService:
         rules = self._learner.learn(repository)
         store = SQLiteKnowledgeStore(self.database_path(workspace))
         try:
-            store.replace_rules(rules)
+            store.replace_rules(rules, repository_fingerprint(repository))
         finally:
             store.close()
         return rules
@@ -175,6 +175,8 @@ class DevelopmentService:
             return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
         store = SQLiteKnowledgeStore(database_path)
         try:
+            if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
+                return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
             rules, context = retrieve_service_context(
                 store,
                 Path(state["repository"]),
