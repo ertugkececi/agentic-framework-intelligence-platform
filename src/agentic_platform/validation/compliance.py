@@ -1,19 +1,29 @@
+"""Deterministic AST compliance checks for active framework rules."""
+from __future__ import annotations
 import ast
-from agentic_platform.domain.models import ValidationFinding,ValidationReport
-def validate_service(source_path,rules):
- tree=ast.parse(source_path.read_text()); service=next((n for n in tree.body if isinstance(n,ast.ClassDef) and n.name.endswith('Service')),None); findings=[]
- if not service:return ValidationReport(False,(ValidationFinding('service.class','missing'),))
- by={}
- for r in rules: by.setdefault(r.kind,[]).append(r)
- base=by['service.base_class'][0].expected_value; dec=by['service.required_decorator'][0].expected_value
- if base not in [getattr(x,'id','') for x in service.bases]: findings.append(ValidationFinding('service.base_class','missing'))
- if dec not in [getattr(x,'id','') for x in service.decorator_list]: findings.append(ValidationFinding('service.required_decorator','missing'))
- assigns={(t.attr,getattr(n.value.func,'id','')) for n in ast.walk(service) if isinstance(n,ast.Assign) and isinstance(n.value,ast.Call) for t in n.targets if isinstance(t,ast.Attribute) and isinstance(t.value,ast.Name) and t.value.id=='self'}
- calls={(n.func.value.attr,n.func.attr) for n in ast.walk(service) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Attribute) and isinstance(n.func.value.value,ast.Name) and n.func.value.value.id=='self'}
- for r in by.get('dependency.constructor',[]):
-  if r.confidence>=.8 and len(r.metadata['concrete_types'])==1:
-   typ=r.metadata['concrete_types'][0]
-   if (r.expected_value,typ) not in assigns: findings.append(ValidationFinding('dependency.constructor','missing'))
-   for m in r.metadata['usage_methods']:
-    if (r.expected_value,m) not in calls: findings.append(ValidationFinding('dependency.constructor','method missing'))
- return ValidationReport(not findings,tuple(findings))
+from pathlib import Path
+from agentic_platform.domain.models import FrameworkRule, ValidationFinding, ValidationReport
+
+def validate_service(source_path: Path, rules: list[FrameworkRule]) -> ValidationReport:
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    service = next((node for node in tree.body if isinstance(node, ast.ClassDef) and node.name.endswith("Service")), None)
+    if service is None:
+        return ValidationReport(False, (ValidationFinding("service.class", "Service class missing"),))
+    findings: list[ValidationFinding] = []
+    _validate_service_structure(service, rules, findings)
+    _validate_resolved_dependencies(service, rules, findings)
+    return ValidationReport(not findings, tuple(findings))
+
+def _validate_service_structure(service, rules, findings) -> None:
+    for kind, nodes in (("service.base_class", service.bases), ("service.required_decorator", service.decorator_list)):
+        expected = next((rule.expected_value for rule in rules if rule.kind == kind), None)
+        observed = {getattr(node, "id", "") for node in nodes}
+        if expected and expected not in observed:
+            findings.append(ValidationFinding(kind, "Required service structure missing"))
+
+def _validate_resolved_dependencies(service, rules, findings) -> None:
+    assignments = {(target.attr, getattr(node.value.func, "id", "")) for node in ast.walk(service) if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) for target in node.targets if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self"}
+    for rule in (item for item in rules if item.kind == "dependency.constructor"):
+        types = rule.metadata.get("concrete_types", [])
+        if len(types) == 1 and (rule.expected_value, types[0]) not in assignments:
+            findings.append(ValidationFinding("dependency.constructor", "Resolved dependency missing"))
