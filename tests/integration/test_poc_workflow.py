@@ -2,7 +2,7 @@ from pathlib import Path
 import shutil
 
 from agentic_platform.framework_learning.learner import FrameworkLearner
-from agentic_platform.orchestration.graph import run_development_task, run_poc
+from agentic_platform.orchestration.graph import FrameworkLearningService, run_development_task, run_framework_learning, run_poc
 
 
 def rules_by_kind(result):
@@ -51,9 +51,40 @@ def test_framework_b_and_mutation_remain_runtime_driven(tmp_path: Path):
     shutil.copytree(root / "examples/sample_customer_repo_b", repository)
     for path in (repository / "app").glob("*.py"):
         path.write_text(path.read_text().replace("FrameworkComponent", "DomainUnit"))
+    run_framework_learning(tmp_path, repository)
     mutated = run_development_task(tmp_path, repository, "Create DomainLookupService")
     assert "class DomainLookupService(DomainUnit):" in (repository / "app/domain_lookup_service.py").read_text()
     assert mutated["status"] == "succeeded"
+
+
+def test_development_task_reuses_explicitly_learned_knowledge(tmp_path: Path, monkeypatch):
+    root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "customer-repo"
+    shutil.copytree(root / "examples/sample_customer_repo", repository)
+
+    run_framework_learning(tmp_path, repository)
+    monkeypatch.setattr(
+        FrameworkLearningService,
+        "learn",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("development must not learn")),
+    )
+    result = run_development_task(tmp_path, repository, "Create ReusedKnowledgeService")
+
+    assert result["framework_rules"]
+    assert result["status"] == "succeeded"
+
+
+def test_development_task_fails_cleanly_when_knowledge_has_not_been_learned(tmp_path: Path):
+    root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "customer-repo"
+    shutil.copytree(root / "examples/sample_customer_repo", repository)
+
+    result = run_development_task(tmp_path, repository, "Create MissingKnowledgeService")
+
+    assert result["status"] == "failed"
+    assert "framework_knowledge_missing" in result["events"]
+    assert not (repository / "app/missing_knowledge_service.py").exists()
+    assert not (tmp_path / "framework_knowledge.sqlite").exists()
 
 
 def test_product_source_has_no_customer_symbol_leaks():

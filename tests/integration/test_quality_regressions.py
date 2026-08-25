@@ -1,9 +1,11 @@
+import shutil
 from pathlib import Path
 
 import pytest
 
+from agentic_platform.domain.models import CommandResult, ValidationReport
 from agentic_platform.framework_learning.learner import FrameworkLearner
-from agentic_platform.orchestration.graph import run_poc
+from agentic_platform.orchestration.graph import DevelopmentService, FrameworkLearningService, run_poc
 from agentic_platform.retrieval.context import AmbiguousFrameworkRuleError
 from agentic_platform.retrieval.context import build_source_index, retrieve_service_context, tokenize_identifier
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
@@ -91,3 +93,55 @@ def test_source_index_tokenizes_camel_and_snake_names_and_returns_task_specific_
 
     assert [(candidate.attribute, candidate.class_name) for candidate in context.unresolved_dependencies] == [("payment_client", "PaymentClient")]
     assert context.unresolved_dependencies[0].reasons
+
+
+def test_graph_retrieval_ranks_payment_example_for_payment_task(tmp_path: Path):
+    result = run_poc(
+        tmp_path,
+        "sample_customer_repo_b",
+        "Create PaymentHistoryService with method list_history(customer_id)",
+    )
+
+    assert result["coding_context"].examples[0].symbol == "PaymentService"
+    assert result["coding_context"].examples[0].score > 0
+
+
+def test_graph_retrieval_keeps_pattern_matched_storage_as_unresolved_context(tmp_path: Path):
+    result = run_poc(
+        tmp_path,
+        "sample_customer_repo_c",
+        "Create PaymentHistoryService with method list_history(customer_id)",
+    )
+
+    storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
+    assert storage.class_name is None
+    assert storage.type_pattern == "*Storage"
+    assert not [item for item in result["coding_context"].unresolved_dependencies if item.attribute == "storage"]
+
+
+def test_graph_retrieval_excludes_storage_candidate_that_misses_type_pattern(tmp_path: Path):
+    root = Path(__file__).resolve().parents[2]
+    repository = tmp_path / "customer-repo"
+    shutil.copytree(root / "examples/sample_customer_repo_c", repository)
+    FrameworkLearningService().learn(tmp_path, repository)
+    payment_service = repository / "app/payment_service.py"
+    payment_service.write_text(payment_service.read_text().replace("PaymentStorage", "PaymentConverter"))
+
+    passed = CommandResult(True, ("check",), "passed")
+    result = DevelopmentService(
+        build_runner=lambda repository, grant: passed,
+        test_runner=lambda repository, grant: passed,
+        validator=lambda path, rules: ValidationReport(True),
+    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)")
+
+    assert [(item.attribute, item.class_name) for item in result["coding_context"].unresolved_dependencies] == [
+        ("storage", "PaymentConverter")
+    ]
+
+
+def test_graph_retrieval_keeps_tied_storage_candidates_unresolved(tmp_path: Path):
+    result = run_poc(tmp_path, "sample_customer_repo_c", "Create StorageService")
+
+    storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
+    assert storage.class_name is None
+    assert storage.type_pattern == "*Storage"

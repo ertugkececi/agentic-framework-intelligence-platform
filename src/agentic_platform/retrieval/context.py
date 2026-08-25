@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from fnmatch import fnmatchcase
 import re
 from pathlib import Path
 
@@ -104,7 +105,13 @@ def retrieve_service_context(store, repository: Path, task: DevelopmentTask | No
 
     index = build_source_index(repository)
     examples = _rank_examples(index, task)
-    unresolved = _unresolved_candidates(index, task, {item.attribute for item in dependencies})
+    resolved_attributes = {item.attribute for item in dependencies if item.class_name is not None}
+    type_patterns = {
+        item.attribute: item.type_pattern
+        for item in dependencies
+        if item.class_name is None and item.type_pattern is not None
+    }
+    unresolved = _unresolved_candidates(index, task, resolved_attributes, type_patterns)
     return rules, CodingContext(
         base.expected_value,
         decorator.expected_value,
@@ -132,6 +139,7 @@ def _unresolved_candidates(
     index: SourceIndex,
     task: DevelopmentTask | None,
     resolved_attributes: set[str],
+    type_patterns: dict[str, str],
 ) -> tuple[UnresolvedDependencyCandidate, ...]:
     if task is None:
         return ()
@@ -146,6 +154,9 @@ def _unresolved_candidates(
             continue
         for dependency in entry.dependencies:
             if dependency.attribute not in resolved_attributes:
+                pattern = type_patterns.get(dependency.attribute)
+                if pattern is not None and fnmatchcase(dependency.class_name, pattern):
+                    continue
                 candidates.append(
                     UnresolvedDependencyCandidate(
                         entry.source_path,

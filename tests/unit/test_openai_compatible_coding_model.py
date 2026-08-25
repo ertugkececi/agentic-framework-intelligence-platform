@@ -23,7 +23,8 @@ from agentic_platform.models.openai_compatible import (
     TransportResponse,
     parse_generated_change,
 )
-from agentic_platform.tasks.types import DevelopmentTask, OperationSpec, ParameterSpec
+from agentic_platform.orchestration.graph import FailureContext
+from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange, OperationSpec, ParameterSpec
 
 
 @dataclass
@@ -115,6 +116,29 @@ def test_model_posts_provider_neutral_prompt_and_parses_generated_change() -> No
     assert request["response_format"] == {"type": "json_object"}
     assert "AccountService" in request["messages"][1]["content"]
     assert "BaseService" in request["messages"][1]["content"]
+
+
+def test_model_posts_repair_prompt_with_previous_change_and_failure_context() -> None:
+    transport = MockTransport(
+        completion('{"summary":"Repair account service","files":[{"path":"app/account_service.py","content":"class AccountService: pass\\n"}]}'),
+        [],
+    )
+    previous = GeneratedChange((FileChange("app/account_service.py", "broken"),), "Initial account service")
+    failure = FailureContext("build", 1, ("pytest",), "NameError: AccountService")
+
+    change = OpenAICompatibleCodingModel(settings(), transport).repair_change(task(), context(), previous, failure)
+
+    assert change.summary == "Repair account service"
+    request = json.loads(transport.calls[0][2])
+    repair_request = json.loads(request["messages"][1]["content"])["repair_request"]
+    assert repair_request["previous_change"]["summary"] == "Initial account service"
+    assert repair_request["previous_change"]["files"] == [{"path": "app/account_service.py", "content": "broken"}]
+    assert repair_request["failure"] == {
+        "stage": "build",
+        "attempt": 1,
+        "command": ["pytest"],
+        "output": "NameError: AccountService",
+    }
 
 
 def test_model_factory_builds_openai_compatible_adapter_with_injected_transport() -> None:

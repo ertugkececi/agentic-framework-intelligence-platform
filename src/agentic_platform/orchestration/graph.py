@@ -16,7 +16,7 @@ from agentic_platform.domain.models import (
 )
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
 from agentic_platform.framework_learning.learner import FrameworkLearner
-from agentic_platform.models.gateway import DeterministicPythonCodingModel
+from agentic_platform.models.gateway import CodingModel, DeterministicPythonCodingModel
 from agentic_platform.retrieval.context import retrieve_service_context
 from agentic_platform.security.policy import poc_grant
 from agentic_platform.tasks.parser import TaskParseError, parse_development_task
@@ -88,7 +88,7 @@ class DevelopmentService:
     def __init__(
         self,
         *,
-        model_factory: Callable[[], object] = DeterministicPythonCodingModel,
+        model_factory: Callable[[], CodingModel] = DeterministicPythonCodingModel,
         build_runner: Callable[[Path, object], CommandResult] = run_build,
         test_runner: Callable[[Path, object], CommandResult] = run_tests,
         validator: Callable[[Path, list[FrameworkRule]], ValidationReport] = validate_service,
@@ -130,6 +130,7 @@ class DevelopmentService:
             ("parse", self._parse_task),
             ("retrieve", self._retrieve),
             ("generate", self._generate),
+            ("repair", self._repair),
             ("apply", self._apply),
             ("build", self._build),
             ("build_failure", self._record_build_failure),
@@ -143,15 +144,16 @@ class DevelopmentService:
 
         graph.add_edge(START, "parse")
         graph.add_conditional_edges("parse", self._after_parse, {"retrieve": "retrieve", "final": "final"})
-        graph.add_edge("retrieve", "generate")
+        graph.add_conditional_edges("retrieve", self._after_retrieve, {"generate": "generate", "final": "final"})
         graph.add_edge("generate", "apply")
         graph.add_edge("apply", "build")
         graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
-        graph.add_conditional_edges("build_failure", self._after_failure, {"retry": "generate", "final": "final"})
+        graph.add_conditional_edges("build_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("tests", self._after_tests, {"compliance": "compliance", "failure": "test_failure"})
-        graph.add_conditional_edges("test_failure", self._after_failure, {"retry": "generate", "final": "final"})
+        graph.add_conditional_edges("test_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("compliance", self._after_compliance, {"final": "final", "failure": "compliance_failure"})
-        graph.add_conditional_edges("compliance_failure", self._after_failure, {"retry": "generate", "final": "final"})
+        graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
+        graph.add_edge("repair", "apply")
         graph.add_edge("final", END)
         return graph.compile()
 
@@ -174,17 +176,42 @@ class DevelopmentService:
 
     def _retrieve(self, state: DevelopmentState) -> dict[str, object]:
         """Online retrieval only: learning belongs to FrameworkLearningService."""
-        store = SQLiteKnowledgeStore(FrameworkLearningService.database_path(Path(state["workspace"])))
+        database_path = FrameworkLearningService.database_path(Path(state["workspace"]))
+        if not database_path.exists():
+            return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
+        store = SQLiteKnowledgeStore(database_path)
         try:
-            rules, context = retrieve_service_context(store, Path(state["repository"]))
+            rules, context = retrieve_service_context(
+                store,
+                Path(state["repository"]),
+                state["specification"],
+            )
+        except ValueError:
+            return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
         finally:
             store.close()
         return {"framework_rules": rules, "coding_context": context, **self._event(state, "framework_retrieved")}
 
+    @staticmethod
+    def _after_retrieve(state: DevelopmentState) -> str:
+        return "final" if state.get("status") == "failed" else "generate"
+
     def _generate(self, state: DevelopmentState) -> dict[str, object]:
         change = self._model_factory().generate_change(state["specification"], state["coding_context"])
-        event = "change_regenerated" if state.get("failure_context") else "change_generated"
-        return {"generated_change": change, **self._event(state, event)}
+        return {"generated_change": change, **self._event(state, "change_generated")}
+
+    def _repair(self, state: DevelopmentState) -> dict[str, object]:
+        change = self._model_factory().repair_change(
+            state["specification"],
+            state["coding_context"],
+            state["generated_change"],
+            state["failure_context"],
+        )
+        return {
+            "generated_change": change,
+            "retry_count": state["retry_count"] + 1,
+            **self._event(state, "change_repaired"),
+        }
 
     def _apply(self, state: DevelopmentState) -> dict[str, object]:
         files = apply_change(state["generated_change"], Path(state["repository"]), poc_grant())
@@ -249,20 +276,18 @@ class DevelopmentService:
             output=output[: self._max_failure_output],
         )
         history = (*history, failure)
-        retries_used = min(state["retry_count"] + 1, state["retry_budget"])
         return {
             "failure_context": failure,
             "failure_history": history,
-            "retry_count": retries_used,
             **self._event(state, f"{stage}_failed"),
         }
 
     @staticmethod
     def _after_failure(state: DevelopmentState) -> str:
         # The initial verification is allowed, followed by at most retry_budget repairs.
-        if len(state.get("failure_history", ())) > state["retry_budget"]:
+        if state["retry_count"] >= state["retry_budget"]:
             return "final"
-        return "retry"
+        return "repair"
 
     def _final(self, state: DevelopmentState) -> dict[str, object]:
         if state.get("status") == "failed" and "specification" not in state:
@@ -270,7 +295,7 @@ class DevelopmentService:
         if all(state.get(key) and state[key].passed for key in ("build_result", "test_result", "validation_report")):
             return {"status": "succeeded"}
         failure = state.get("failure_context")
-        if failure and len(state.get("failure_history", ())) > state["retry_budget"]:
+        if failure and state["retry_count"] >= state["retry_budget"]:
             return {"status": "failed", **self._event(state, "retry_budget_exhausted")}
         return {"status": "failed"}
 
@@ -286,8 +311,7 @@ def run_development_task(
     task: str = "Create GeneratedService",
     retry_budget: int = DEFAULT_RETRY_BUDGET,
 ) -> DevelopmentState:
-    """Compatibility helper that performs learning before the online development run."""
-    run_framework_learning(workspace, repository)
+    """Run online development using knowledge learned in an earlier lifecycle phase."""
     return DevelopmentService().run(workspace, repository, task, retry_budget)
 
 
@@ -299,4 +323,5 @@ def run_poc(
 ) -> DevelopmentState:
     repository = workspace / "customer-repo"
     shutil.copytree(Path(__file__).resolve().parents[3] / "examples" / sample_name, repository)
+    run_framework_learning(workspace, repository)
     return run_development_task(workspace, repository, task, retry_budget)

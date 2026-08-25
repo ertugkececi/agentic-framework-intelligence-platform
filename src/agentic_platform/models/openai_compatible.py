@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from agentic_platform.domain.models import CodingContext
 from agentic_platform.models.gateway import CodingModel
-from agentic_platform.models.prompt import build_coding_messages
+from agentic_platform.models.prompt import build_coding_messages, build_repair_messages
 from agentic_platform.models.settings import OpenAICompatibleSettings
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
 
@@ -97,9 +97,21 @@ class OpenAICompatibleCodingModel(CodingModel):
         self._transport = transport or UrllibHttpTransport()
 
     def generate_change(self, task: DevelopmentTask, context: CodingContext) -> GeneratedChange:
+        return self._request_change(build_coding_messages(task, context))
+
+    def repair_change(
+        self,
+        task: DevelopmentTask,
+        context: CodingContext,
+        previous_change: GeneratedChange,
+        failure_context: object,
+    ) -> GeneratedChange:
+        return self._request_change(build_repair_messages(task, context, previous_change, failure_context))
+
+    def _request_change(self, messages: list[dict[str, str]]) -> GeneratedChange:
         payload = {
             "model": self._settings.model,
-            "messages": build_coding_messages(task, context),
+            "messages": messages,
             "temperature": 0,
             "response_format": {"type": "json_object"},
         }

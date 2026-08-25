@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from agentic_platform.domain.models import CodingContext
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
+
+if TYPE_CHECKING:
+    from agentic_platform.orchestration.graph import FailureContext
 
 
 class CodingModel(Protocol):
@@ -15,6 +18,15 @@ class CodingModel(Protocol):
         context: CodingContext,
     ) -> GeneratedChange:
         """Return a structured proposal without writing to the filesystem."""
+
+    def repair_change(
+        self,
+        task: DevelopmentTask,
+        context: CodingContext,
+        previous_change: GeneratedChange,
+        failure_context: FailureContext,
+    ) -> GeneratedChange:
+        """Return a revised structured proposal using the failed proposal and evidence."""
 
 
 class DeterministicPythonCodingModel:
@@ -43,6 +55,16 @@ class DeterministicPythonCodingModel:
             (FileChange(f"app/{filename}.py", source), FileChange(f"tests/test_{filename}.py", test)),
             f"Create {task.artifact_name}",
         )
+
+    def repair_change(
+        self,
+        task: DevelopmentTask,
+        context: CodingContext,
+        previous_change: GeneratedChange,
+        failure_context: FailureContext,
+    ) -> GeneratedChange:
+        """Deterministic fallback has no adaptive behavior, but honors the repair port."""
+        return self.generate_change(task, context)
 
     def _render_imports(self, context: CodingContext) -> str:
         grouped: dict[str, list[str]] = defaultdict(list)
