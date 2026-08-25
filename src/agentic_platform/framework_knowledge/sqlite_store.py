@@ -17,7 +17,7 @@ class SQLiteKnowledgeStore:
               id INTEGER PRIMARY KEY, kind TEXT NOT NULL, expected_value TEXT NOT NULL,
               confidence REAL NOT NULL, support_count INTEGER NOT NULL, conflict_count INTEGER NOT NULL,
               origin TEXT NOT NULL, status TEXT NOT NULL, framework_version TEXT NOT NULL,
-              discovered_at TEXT NOT NULL, evidence_json TEXT NOT NULL
+              discovered_at TEXT NOT NULL, evidence_json TEXT NOT NULL, metadata_json TEXT NOT NULL
             )
         """)
         self.connection.commit()
@@ -27,20 +27,20 @@ class SQLiteKnowledgeStore:
             self.connection.execute("DELETE FROM framework_rule")
             self.connection.executemany(
                 """INSERT INTO framework_rule
-                (kind, expected_value, confidence, support_count, conflict_count, origin, status, framework_version, discovered_at, evidence_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (kind, expected_value, confidence, support_count, conflict_count, origin, status, framework_version, discovered_at, evidence_json, metadata_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 [(
                     rule.kind, rule.expected_value, rule.confidence, rule.support_count,
                     rule.conflict_count, str(rule.origin), str(rule.status), rule.framework_version,
-                    rule.discovered_at.isoformat(),
-                    json.dumps([e.__dict__ for e in rule.evidence]),
+                    rule.discovered_at.isoformat(), json.dumps([e.__dict__ for e in rule.evidence]),
+                    json.dumps(dict(rule.metadata)),
                 ) for rule in rules],
             )
 
-    def active_rules_for(self, task_kind: str) -> list[FrameworkRule]:
+    def active_rules_for(self, prefix: str) -> list[FrameworkRule]:
         rows = self.connection.execute(
             "SELECT * FROM framework_rule WHERE status = 'active' AND kind LIKE ? ORDER BY confidence DESC",
-            (f"{task_kind}.%",),
+            (f"{prefix}.%",),
         ).fetchall()
         return [self._to_rule(row) for row in rows]
 
@@ -54,4 +54,5 @@ class SQLiteKnowledgeStore:
             support_count=row["support_count"], conflict_count=row["conflict_count"],
             origin=row["origin"], status=row["status"], framework_version=row["framework_version"],
             evidence=tuple(Evidence(**item) for item in json.loads(row["evidence_json"])),
+            metadata=json.loads(row["metadata_json"]),
         )

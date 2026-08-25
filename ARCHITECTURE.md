@@ -234,6 +234,24 @@ erDiagram
 
 `origin ∈ {deterministic_inferred, llm_inferred, human_approved, human_edited, imported}` and `status ∈ {candidate, active, rejected, superseded, deprecated}`. An inference becomes `active` only if policy thresholds are met or a reviewer approves it. Rule confidence is recomputed from weighted support and conflicts; human approval is authoritative but does not erase the observed evidence.
 
+### Executable PoC coding-context boundary
+
+The PoC proves the rule-to-code boundary with a typed `CodingContext`, assembled outside the model layer:
+
+```python
+@dataclass(frozen=True)
+class CodingContext:
+    service_base_class: str
+    service_decorator: str
+    imports: tuple[ImportSpec, ...]
+    logger_class: str
+    logger_attribute: str
+    logger_method: str
+    examples: tuple[CodeExample, ...]
+```
+
+Generic Python AST discovery emits `service.base_class`, `service.required_decorator`, `logging.logger_class`, `logging.logger_attribute`, and `logging.required_method`. The first three include `metadata.import_module` learned from source imports. The deterministic PoC generator receives only this context; customer symbols do not occur anywhere in `src/agentic_platform`. A second repository with different symbols and a base-class rename mutation are integration-tested against the unchanged product source.
+
 ### Example rule payload
 
 ```yaml

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agentic_platform.domain.models import CodingContext
 from agentic_platform.models.gateway import CodingModel
 from agentic_platform.security.policy import Capability, CapabilityGrant
 
@@ -10,7 +11,7 @@ from agentic_platform.security.policy import Capability, CapabilityGrant
 def implement_service(
     repository: Path,
     service_name: str,
-    rules_context: str,
+    context: CodingContext,
     model: CodingModel,
     grant: CapabilityGrant,
 ) -> list[str]:
@@ -20,7 +21,7 @@ def implement_service(
     app.mkdir(exist_ok=True)
     tests.mkdir(exist_ok=True)
     service_file = app / "customer_account_service.py"
-    service_file.write_text(model.generate_service(service_name, rules_context), encoding="utf-8")
+    service_file.write_text(model.generate_service(service_name, context), encoding="utf-8")
     (tests / "test_customer_account_service.py").write_text(
         "from app.customer_account_service import CustomerAccountService\n\n"
         "def test_get_account_returns_requested_identifier():\n"

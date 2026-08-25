@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import StrEnum
-from typing import Any
+from typing import Mapping
 
 
 class RuleOrigin(StrEnum):
@@ -36,10 +36,35 @@ class FrameworkRule:
     support_count: int
     conflict_count: int
     evidence: tuple[Evidence, ...]
+    metadata: Mapping[str, str] = field(default_factory=dict)
     origin: RuleOrigin = RuleOrigin.DETERMINISTIC_INFERRED
     status: RuleStatus = RuleStatus.ACTIVE
     framework_version: str = "1.0"
     discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@dataclass(frozen=True)
+class ImportSpec:
+    module: str
+    symbol: str
+
+
+@dataclass(frozen=True)
+class CodeExample:
+    source_path: str
+    symbol: str
+    snippet: str
+
+
+@dataclass(frozen=True)
+class CodingContext:
+    service_base_class: str
+    service_decorator: str
+    imports: tuple[ImportSpec, ...]
+    logger_class: str
+    logger_attribute: str
+    logger_method: str
+    examples: tuple[CodeExample, ...]
 
 
 @dataclass(frozen=True)

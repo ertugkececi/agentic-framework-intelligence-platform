@@ -8,7 +8,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from agentic_platform.agents.coding import implement_service
-from agentic_platform.domain.models import CommandResult, FrameworkRule, ValidationReport
+from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationReport
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.models.gateway import DeterministicPythonCodingModel
@@ -24,15 +24,12 @@ class DevelopmentState(TypedDict, total=False):
     task: str
     task_kind: str
     framework_rules: list[FrameworkRule]
-    examples: list[str]
-    dependency_paths: list[str]
+    coding_context: CodingContext
     plan: str
     generated_files: list[str]
     build_result: CommandResult
     test_result: CommandResult
     validation_report: ValidationReport
-    retry_count: int
-    retry_budget: int
     status: str
     events: list[str]
 
@@ -52,27 +49,31 @@ def learn_and_retrieve(state: DevelopmentState) -> dict[str, Any]:
     store = SQLiteKnowledgeStore(Path(state["workspace"]) / "framework_knowledge.sqlite")
     try:
         store.replace_rules(FrameworkLearner(minimum_evidence=3).learn(repository))
-        rules, examples, dependencies = retrieve_service_context(store, repository)
+        rules, context = retrieve_service_context(store, repository)
+    except ValueError as error:
+        return {"status": "failed", **_event(state, f"context_unavailable:{error}")}
     finally:
         store.close()
     return {
         "framework_rules": rules,
-        "examples": examples,
-        "dependency_paths": dependencies,
-        **_event(state, f"context_retrieved:rules={len(rules)} examples={len(examples)}"),
+        "coding_context": context,
+        **_event(state, f"context_retrieved:rules={len(rules)} examples={len(context.examples)}"),
     }
 
 
 def plan_change(state: DevelopmentState) -> dict[str, Any]:
-    if not state.get("framework_rules"):
-        return {"status": "failed", **_event(state, "no_active_framework_rules")}
-    rules = ", ".join(f"{r.kind}={r.expected_value}" for r in state["framework_rules"])
-    return {"plan": f"Create CustomerAccountService constrained by: {rules}", **_event(state, "plan_created")}
+    context = state.get("coding_context")
+    if context is None:
+        return {"status": "failed", **_event(state, "no_coding_context")}
+    return {
+        "plan": f"Create CustomerAccountService using {len(context.imports)} learned imports",
+        **_event(state, "plan_created"),
+    }
 
 
 def implement_change(state: DevelopmentState) -> dict[str, Any]:
     generated = implement_service(
-        Path(state["repository"]), "CustomerAccountService", state["plan"],
+        Path(state["repository"]), "CustomerAccountService", state["coding_context"],
         DeterministicPythonCodingModel(), poc_grant(),
     )
     return {"generated_files": generated, **_event(state, "implementation_written")}
@@ -94,12 +95,21 @@ def compliance(state: DevelopmentState) -> dict[str, Any]:
 
 
 def finalize(state: DevelopmentState) -> dict[str, Any]:
-    succeeded = state["build_result"].passed and state["test_result"].passed and state["validation_report"].passed
+    succeeded = (
+        state.get("status") != "failed"
+        and bool(state.get("build_result") and state["build_result"].passed)
+        and bool(state.get("test_result") and state["test_result"].passed)
+        and bool(state.get("validation_report") and state["validation_report"].passed)
+    )
     return {"status": "succeeded" if succeeded else "failed", **_event(state, "finalized")}
 
 
 def _after_task(state: DevelopmentState) -> str:
     return "learn" if state.get("status") != "failed" else "finalize"
+
+
+def _after_plan(state: DevelopmentState) -> str:
+    return "implement" if state.get("status") != "failed" else "finalize"
 
 
 def _after_build(state: DevelopmentState) -> str:
@@ -108,10 +118,6 @@ def _after_build(state: DevelopmentState) -> str:
 
 def _after_tests(state: DevelopmentState) -> str:
     return "compliance" if state["test_result"].passed else "finalize"
-
-
-def _after_compliance(state: DevelopmentState) -> str:
-    return "finalize"
 
 
 def build_graph():
@@ -127,23 +133,26 @@ def build_graph():
     graph.add_edge(START, "analyze_task")
     graph.add_conditional_edges("analyze_task", _after_task, {"learn": "learn", "finalize": "finalize"})
     graph.add_edge("learn", "plan")
-    graph.add_edge("plan", "implement")
+    graph.add_conditional_edges("plan", _after_plan, {"implement": "implement", "finalize": "finalize"})
     graph.add_edge("implement", "build")
     graph.add_conditional_edges("build", _after_build, {"tests": "tests", "finalize": "finalize"})
     graph.add_conditional_edges("tests", _after_tests, {"compliance": "compliance", "finalize": "finalize"})
-    graph.add_conditional_edges("compliance", _after_compliance, {"finalize": "finalize"})
+    graph.add_edge("compliance", "finalize")
     graph.add_edge("finalize", END)
     return graph.compile()
 
 
-def run_poc(workspace: Path) -> DevelopmentState:
-    """Copy a real sample customer repository and execute the complete graph."""
-    root = Path(__file__).resolve().parents[3]
-    repository = workspace / "customer-repo"
-    shutil.copytree(root / "examples" / "sample_customer_repo", repository)
+def run_development_task(workspace: Path, repository: Path, task: str = "Create CustomerAccountService") -> DevelopmentState:
     initial: DevelopmentState = {
-        "workspace": str(workspace), "repository": str(repository),
-        "task": "Create CustomerAccountService", "retry_count": 0, "retry_budget": 2,
+        "workspace": str(workspace), "repository": str(repository), "task": task,
         "events": [], "status": "running",
     }
     return build_graph().invoke(initial)
+
+
+def run_poc(workspace: Path, sample_name: str = "sample_customer_repo") -> DevelopmentState:
+    """Copy a selected real customer repository and execute the complete graph."""
+    root = Path(__file__).resolve().parents[3]
+    repository = workspace / "customer-repo"
+    shutil.copytree(root / "examples" / sample_name, repository)
+    return run_development_task(workspace, repository)
