@@ -1,26 +1,234 @@
-"""Rule selection and deterministic coding-context assembly."""
+"""Rule selection and deterministic task-aware coding-context assembly."""
 from __future__ import annotations
+
 import ast
-from collections import defaultdict
+import re
 from pathlib import Path
-from agentic_platform.domain.models import CodeExample,CodingContext,DependencyContext,ImportSpec,FrameworkRule
-class AmbiguousFrameworkRuleError(ValueError): pass
-def select_rule(rules:list[FrameworkRule],kind:str)->FrameworkRule:
-    candidates=[r for r in rules if r.kind==kind]
-    if not candidates: raise ValueError(f"Missing active rule: {kind}")
-    ranked=sorted(candidates,key=lambda r:(r.confidence,r.support_count,-r.conflict_count),reverse=True)
-    if len(ranked)>1 and (ranked[0].confidence,ranked[0].support_count,ranked[0].conflict_count)==(ranked[1].confidence,ranked[1].support_count,ranked[1].conflict_count): raise AmbiguousFrameworkRuleError(kind)
+
+from agentic_platform.domain.models import (
+    CodeExample,
+    CodingContext,
+    DependencyContext,
+    FrameworkRule,
+    ImportSpec,
+    SourceDependency,
+    SourceIndex,
+    SourceIndexEntry,
+    UnresolvedDependencyCandidate,
+)
+from agentic_platform.tasks.types import DevelopmentTask
+
+
+class AmbiguousFrameworkRuleError(ValueError):
+    pass
+
+
+_TOKEN_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_NON_ALPHANUMERIC = re.compile(r"[^A-Za-z0-9]+")
+
+
+def tokenize_identifier(value: str) -> tuple[str, ...]:
+    """Split arbitrary camel/snake/kebab identifiers without domain vocabulary."""
+    normalized = _TOKEN_BOUNDARY.sub(" ", value)
+    normalized = _NON_ALPHANUMERIC.sub(" ", normalized)
+    return tuple(token.lower() for token in normalized.split() if token)
+
+
+def select_rule(rules: list[FrameworkRule], kind: str) -> FrameworkRule:
+    candidates = [rule for rule in rules if rule.kind == kind]
+    if not candidates:
+        raise ValueError(f"Missing active rule: {kind}")
+    ranked = sorted(
+        candidates,
+        key=lambda rule: (rule.confidence, rule.support_count, -rule.conflict_count),
+        reverse=True,
+    )
+    if len(ranked) > 1 and _rule_rank(ranked[0]) == _rule_rank(ranked[1]):
+        raise AmbiguousFrameworkRuleError(kind)
     return ranked[0]
-def retrieve_service_context(store,repository:Path):
-    rules=store.active_rules_for("service")+store.active_rules_for("dependency")
-    base=select_rule(rules,"service.base_class"); decorator=select_rule(rules,"service.required_decorator")
-    imports=[ImportSpec(base.metadata["import_module"],base.expected_value),ImportSpec(decorator.metadata["import_module"],decorator.expected_value)]
-    dependencies=[]
-    for rule in [r for r in rules if r.kind=="dependency.constructor"]:
-        types=rule.metadata["concrete_types"]; modules=rule.metadata["import_modules"]; concrete=types[0] if len(types)==1 else None; module=modules[0] if len(modules)==1 else None
-        dependencies.append(DependencyContext(rule.expected_value,concrete,module,tuple(rule.metadata["usage_methods"]),tuple(rule.metadata["constructor_arguments"]),rule.metadata.get("type_pattern")))
-        if concrete and module: imports.append(ImportSpec(module,concrete))
-    examples=[]
-    for relative in sorted({r.evidence[0].source_path for r in rules if r.evidence})[:3]:
-        source=(repository/relative).read_text(); tree=ast.parse(source); service=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name.endswith("Service")); examples.append(CodeExample(relative,service.name,ast.get_source_segment(source,service) or ""))
-    return rules,CodingContext(base.expected_value,decorator.expected_value,tuple(imports),tuple(dependencies),tuple(examples))
+
+
+def build_source_index(repository: Path) -> SourceIndex:
+    """Create a stable structural source index for framework-shaped classes."""
+    entries: list[SourceIndexEntry] = []
+    for path in sorted(repository.rglob("*.py")):
+        if "tests" in path.parts:
+            continue
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        imports = _imports(tree)
+        relative = path.relative_to(repository).as_posix()
+        for node in tree.body:
+            if not isinstance(node, ast.ClassDef) or not (node.bases or node.decorator_list):
+                continue
+            dependencies = _source_dependencies(node, imports)
+            identity = (relative, node.name)
+            entries.append(
+                SourceIndexEntry(
+                    relative,
+                    node.name,
+                    ast.get_source_segment(source, node) or "",
+                    tuple(token for value in identity for token in tokenize_identifier(value)),
+                    dependencies,
+                )
+            )
+    return SourceIndex(tuple(entries))
+
+
+def retrieve_service_context(store, repository: Path, task: DevelopmentTask | None = None):
+    rules = store.active_rules_for("service") + store.active_rules_for("dependency")
+    base = select_rule(rules, "service.base_class")
+    decorator = select_rule(rules, "service.required_decorator")
+    imports = [
+        ImportSpec(base.metadata["import_module"], base.expected_value),
+        ImportSpec(decorator.metadata["import_module"], decorator.expected_value),
+    ]
+    dependencies = []
+    for rule in (item for item in rules if item.kind == "dependency.constructor"):
+        types = rule.metadata["concrete_types"]
+        modules = rule.metadata["import_modules"]
+        concrete = types[0] if len(types) == 1 else None
+        module = modules[0] if len(modules) == 1 else None
+        dependencies.append(
+            DependencyContext(
+                rule.expected_value,
+                concrete,
+                module,
+                tuple(rule.metadata["usage_methods"]),
+                tuple(rule.metadata["constructor_arguments"]),
+                rule.metadata.get("type_pattern"),
+            )
+        )
+        if concrete and module:
+            imports.append(ImportSpec(module, concrete))
+
+    index = build_source_index(repository)
+    examples = _rank_examples(index, task)
+    unresolved = _unresolved_candidates(index, task, {item.attribute for item in dependencies})
+    return rules, CodingContext(
+        base.expected_value,
+        decorator.expected_value,
+        tuple(imports),
+        tuple(dependencies),
+        examples,
+        unresolved,
+    )
+
+
+def _rank_examples(index: SourceIndex, task: DevelopmentTask | None) -> tuple[CodeExample, ...]:
+    task_tokens = _task_tokens(task)
+    ranked = []
+    for entry in index.entries:
+        score, reasons = _score(entry.tokens, task_tokens)
+        ranked.append((score, reasons, entry))
+    ranked.sort(key=lambda item: (-item[0], item[2].source_path, item[2].symbol))
+    return tuple(
+        CodeExample(entry.source_path, entry.symbol, entry.snippet, score, reasons)
+        for score, reasons, entry in ranked[:3]
+    )
+
+
+def _unresolved_candidates(
+    index: SourceIndex,
+    task: DevelopmentTask | None,
+    resolved_attributes: set[str],
+) -> tuple[UnresolvedDependencyCandidate, ...]:
+    if task is None:
+        return ()
+    task_tokens = _task_tokens(task)
+    ranked = [( *_score(entry.tokens, task_tokens), entry) for entry in index.entries]
+    highest_score = max((score for score, _, _ in ranked), default=0)
+    if highest_score == 0:
+        return ()
+    candidates = []
+    for score, reasons, entry in ranked:
+        if score != highest_score:
+            continue
+        for dependency in entry.dependencies:
+            if dependency.attribute not in resolved_attributes:
+                candidates.append(
+                    UnresolvedDependencyCandidate(
+                        entry.source_path,
+                        dependency.attribute,
+                        dependency.class_name,
+                        dependency.import_module,
+                        dependency.methods,
+                        dependency.constructor_arguments,
+                        score,
+                        reasons,
+                    )
+                )
+    return tuple(sorted(candidates, key=lambda item: (item.source_path, item.attribute, item.class_name)))
+
+
+def _task_tokens(task: DevelopmentTask | None) -> tuple[str, ...]:
+    if task is None:
+        return ()
+    values = [task.artifact_name]
+    for operation in task.operations:
+        values.append(operation.name)
+        values.extend(parameter.name for parameter in operation.parameters)
+    return tuple(token for value in values for token in tokenize_identifier(value))
+
+
+def _score(source_tokens: tuple[str, ...], task_tokens: tuple[str, ...]) -> tuple[int, tuple[str, ...]]:
+    source_vocabulary = set(source_tokens)
+    matched = tuple(sorted(set(task_tokens).intersection(source_vocabulary)))
+    return 10 * len(matched), tuple(f"matched task token: {token}" for token in matched)
+
+
+def _source_dependencies(service: ast.ClassDef, imports: dict[str, str]) -> tuple[SourceDependency, ...]:
+    initializer = next((node for node in service.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"), None)
+    if initializer is None:
+        return ()
+    dependencies = []
+    for node in ast.walk(initializer):
+        if not (isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)):
+            continue
+        arguments = tuple(_argument_value(argument) for argument in node.value.args)
+        for target in node.targets:
+            if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                dependencies.append(
+                    SourceDependency(
+                        target.attr,
+                        node.value.func.id,
+                        imports.get(node.value.func.id),
+                        tuple(sorted(_calls(service, target.attr))),
+                        arguments,
+                    )
+                )
+    return tuple(sorted(dependencies, key=lambda item: item.attribute))
+
+
+def _calls(service: ast.ClassDef, attribute: str) -> set[str]:
+    return {
+        node.func.attr
+        for node in ast.walk(service)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Attribute)
+        and isinstance(node.func.value.value, ast.Name)
+        and node.func.value.value.id == "self"
+        and node.func.value.attr == attribute
+    }
+
+
+def _argument_value(argument: ast.expr) -> str:
+    if isinstance(argument, ast.Name) and argument.id == "__name__":
+        return "__name__"
+    if isinstance(argument, ast.Constant):
+        return repr(argument.value)
+    return "unsupported"
+
+
+def _imports(tree: ast.Module) -> dict[str, str]:
+    return {
+        alias.asname or alias.name: node.module
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+
+
+def _rule_rank(rule: FrameworkRule) -> tuple[float, int, int]:
+    return rule.confidence, rule.support_count, rule.conflict_count

@@ -1,0 +1,71 @@
+"""Prompt construction for the coding-model gateway."""
+from __future__ import annotations
+
+import json
+
+from agentic_platform.domain.models import CodingContext
+from agentic_platform.tasks.types import DevelopmentTask
+
+_SYSTEM_PROMPT = """You generate repository changes from a bounded coding context.
+Return only a JSON object with this exact shape:
+{"summary":"short description","files":[{"path":"relative/path","content":"complete file content"}]}.
+Do not include Markdown fences, commentary, or fields outside that schema.
+Do not assume dependencies or conventions not present in the supplied context."""
+
+
+def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list[dict[str, str]]:
+    """Build provider-independent Chat Completions messages from typed inputs."""
+    request_context = {
+        "task": {
+            "artifact_type": task.artifact_type,
+            "artifact_name": task.artifact_name,
+            "operations": [
+                {"name": operation.name, "parameters": [parameter.name for parameter in operation.parameters]}
+                for operation in task.operations
+            ],
+        },
+        "coding_context": {
+            "service_base_class": context.service_base_class,
+            "service_decorator": context.service_decorator,
+            "imports": [{"module": item.module, "symbol": item.symbol} for item in context.imports],
+            "dependencies": [
+                {
+                    "attribute": item.attribute,
+                    "class_name": item.class_name,
+                    "import_module": item.import_module,
+                    "methods": list(item.methods),
+                    "constructor_arguments": list(item.constructor_arguments),
+                    "type_pattern": item.type_pattern,
+                    "required": item.required,
+                }
+                for item in context.dependencies
+            ],
+            "examples": [
+                {
+                    "source_path": item.source_path,
+                    "symbol": item.symbol,
+                    "snippet": item.snippet,
+                    "score": item.score,
+                    "reasons": list(item.reasons),
+                }
+                for item in context.examples
+            ],
+            "unresolved_dependencies": [
+                {
+                    "source_path": item.source_path,
+                    "attribute": item.attribute,
+                    "class_name": item.class_name,
+                    "import_module": item.import_module,
+                    "methods": list(item.methods),
+                    "constructor_arguments": list(item.constructor_arguments),
+                    "score": item.score,
+                    "reasons": list(item.reasons),
+                }
+                for item in context.unresolved_dependencies
+            ],
+        },
+    }
+    return [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": json.dumps(request_context, ensure_ascii=False, separators=(",", ":"))},
+    ]

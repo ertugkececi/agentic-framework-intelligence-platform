@@ -16,8 +16,16 @@ def test_parser_extracts_dynamic_artifact_and_operation() -> None:
 
 
 def test_different_tasks_generate_different_artifacts_and_operations(tmp_path: Path) -> None:
-    first = run_poc(tmp_path / "first", task="Create CustomerAccountService with method get_account(account_id)")
-    second = run_poc(tmp_path / "second", task="Create PaymentHistoryService with method list_history(customer_id)")
+    first = run_poc(
+        tmp_path / "first",
+        "sample_customer_repo",
+        task="Create CustomerAccountService with method get_account(account_id)",
+    )
+    second = run_poc(
+        tmp_path / "second",
+        "sample_customer_repo",
+        task="Create PaymentHistoryService with method list_history(customer_id)",
+    )
     assert "class CustomerAccountService" in (tmp_path / "first/customer-repo/app/customer_account_service.py").read_text()
     output = (tmp_path / "second/customer-repo/app/payment_history_service.py").read_text()
     assert "class PaymentHistoryService" in output and "def list_history" in output

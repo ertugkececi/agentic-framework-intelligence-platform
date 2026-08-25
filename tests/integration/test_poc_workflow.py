@@ -14,14 +14,14 @@ def rules_by_kind(result):
 
 
 def test_framework_a_regression_generates_from_learned_dependency_context(tmp_path: Path):
-    result = run_poc(tmp_path, "sample_customer_repo")
+    result = run_poc(tmp_path, "sample_customer_repo", "Create CustomerAccountService with method get_account(account_id)")
     assert result["status"] == "succeeded"
     context = result["coding_context"]
     assert [(item.attribute, item.class_name, item.methods) for item in context.dependencies] == [("logger", "CompanyLogger", ("info",))]
 
 
 def test_multiple_constructor_dependencies_are_generic_structured_rules(tmp_path: Path):
-    result = run_poc(tmp_path, "sample_customer_repo_b")
+    result = run_poc(tmp_path, "sample_customer_repo_b", "Create CustomerAccountService with method get_account(account_id)")
     root = Path(__file__).resolve().parents[2]
     rules = rules_by_kind(FrameworkLearner().learn(root / "examples/sample_customer_repo_b"))["dependency.constructor"]
     assert {rule.expected_value for rule in rules} == {"log", "repository", "mapper", "payment_client", "notification_client"}
@@ -32,7 +32,7 @@ def test_multiple_constructor_dependencies_are_generic_structured_rules(tmp_path
 
 
 def test_many_dependency_rules_preserve_cardinality_and_common_threshold(tmp_path: Path):
-    result = run_poc(tmp_path, "sample_customer_repo_b")
+    result = run_poc(tmp_path, "sample_customer_repo_b", "Create CustomerAccountService with method get_account(account_id)")
     dependencies = {item.attribute: item for item in result["coding_context"].dependencies}
     assert set(dependencies) == {"log", "repository", "mapper"}
     assert dependencies["repository"].class_name is None
@@ -42,7 +42,7 @@ def test_many_dependency_rules_preserve_cardinality_and_common_threshold(tmp_pat
 
 
 def test_framework_b_and_mutation_remain_runtime_driven(tmp_path: Path):
-    result = run_poc(tmp_path, "sample_customer_repo_b")
+    result = run_poc(tmp_path, "sample_customer_repo_b", "Create CustomerAccountService with method get_account(account_id)")
     generated = (tmp_path / "customer-repo/app/customer_account_service.py").read_text()
     assert "class CustomerAccountService(FrameworkComponent):" in generated
     assert "self.log = EnterpriseLog(__name__)" in generated

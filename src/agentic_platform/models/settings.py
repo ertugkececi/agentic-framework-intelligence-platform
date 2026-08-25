@@ -1,0 +1,53 @@
+"""Configuration for provider-neutral OpenAI-compatible coding endpoints."""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from os import environ
+from typing import Mapping
+from urllib.parse import urlparse
+
+
+@dataclass(frozen=True)
+class OpenAICompatibleSettings:
+    """Connection settings for a Chat Completions-compatible endpoint.
+
+    Environment variables are deliberately capability-oriented rather than named
+    after a model vendor, so local and hosted compatible endpoints share one
+    adapter: ``CODING_MODEL_BASE_URL``, ``CODING_MODEL_NAME``, optional
+    ``CODING_MODEL_API_KEY``, and optional ``CODING_MODEL_TIMEOUT_SECONDS``.
+    """
+
+    base_url: str
+    model: str
+    api_key: str | None = None
+    timeout_seconds: float = 60.0
+
+    def __post_init__(self) -> None:
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if not self.model.strip():
+            raise ValueError("model must not be empty")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+
+    @property
+    def chat_completions_url(self) -> str:
+        return f"{self.base_url.rstrip('/')}/chat/completions"
+
+    @classmethod
+    def from_environment(cls, values: Mapping[str, str] | None = None) -> "OpenAICompatibleSettings":
+        source = environ if values is None else values
+        base_url = source.get("CODING_MODEL_BASE_URL", "").strip()
+        model = source.get("CODING_MODEL_NAME", "").strip()
+        if not base_url:
+            raise ValueError("CODING_MODEL_BASE_URL is required")
+        if not model:
+            raise ValueError("CODING_MODEL_NAME is required")
+        timeout_text = source.get("CODING_MODEL_TIMEOUT_SECONDS", "60")
+        try:
+            timeout_seconds = float(timeout_text)
+        except ValueError as error:
+            raise ValueError("CODING_MODEL_TIMEOUT_SECONDS must be a number") from error
+        api_key = source.get("CODING_MODEL_API_KEY") or None
+        return cls(base_url=base_url, model=model, api_key=api_key, timeout_seconds=timeout_seconds)
