@@ -51,8 +51,8 @@ def test_framework_b_and_mutation_remain_runtime_driven(tmp_path: Path):
     shutil.copytree(root / "examples/sample_customer_repo_b", repository)
     for path in (repository / "app").glob("*.py"):
         path.write_text(path.read_text().replace("FrameworkComponent", "DomainUnit"))
-    mutated = run_development_task(tmp_path, repository)
-    assert "class CustomerAccountService(DomainUnit):" in (repository / "app/customer_account_service.py").read_text()
+    mutated = run_development_task(tmp_path, repository, "Create DomainLookupService")
+    assert "class DomainLookupService(DomainUnit):" in (repository / "app/domain_lookup_service.py").read_text()
     assert mutated["status"] == "succeeded"
 
 

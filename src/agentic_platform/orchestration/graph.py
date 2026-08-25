@@ -1,158 +1,42 @@
-"""Real LangGraph PoC: learn, persist, retrieve, generate, build, test, validate."""
-from __future__ import annotations
-
+"""Task-aware LangGraph development workflow."""
 import shutil
 from pathlib import Path
-from typing import Any, TypedDict
-
-from langgraph.graph import END, START, StateGraph
-
-from agentic_platform.agents.coding import implement_service
-from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationReport
-from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
+from typing import TypedDict
+from langgraph.graph import START,END,StateGraph
+from agentic_platform.domain.models import CommandResult,CodingContext,FrameworkRule,ValidationReport
 from agentic_platform.framework_learning.learner import FrameworkLearner
+from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
 from agentic_platform.models.gateway import DeterministicPythonCodingModel
 from agentic_platform.retrieval.context import retrieve_service_context
 from agentic_platform.security.policy import poc_grant
-from agentic_platform.tools.repository_tools import run_build, run_tests
+from agentic_platform.tasks.parser import TaskParseError,parse_development_task
+from agentic_platform.tasks.types import DevelopmentTask,GeneratedChange
+from agentic_platform.tools.changes import apply_change
+from agentic_platform.tools.repository_tools import run_build,run_tests
 from agentic_platform.validation.compliance import validate_service
-
-
-class DevelopmentState(TypedDict, total=False):
-    workspace: str
-    repository: str
-    task: str
-    task_kind: str
-    framework_rules: list[FrameworkRule]
-    coding_context: CodingContext
-    plan: str
-    generated_files: list[str]
-    build_result: CommandResult
-    test_result: CommandResult
-    validation_report: ValidationReport
-    status: str
-    events: list[str]
-
-
-def _event(state: DevelopmentState, event: str) -> dict[str, Any]:
-    return {"events": [*state.get("events", []), event]}
-
-
-def analyze_task(state: DevelopmentState) -> dict[str, Any]:
-    if "service" not in state["task"].lower():
-        return {"task_kind": "unknown", "status": "failed", **_event(state, "task_unsupported")}
-    return {"task_kind": "service", **_event(state, "task_analyzed:service")}
-
-
-def learn_and_retrieve(state: DevelopmentState) -> dict[str, Any]:
-    repository = Path(state["repository"])
-    store = SQLiteKnowledgeStore(Path(state["workspace"]) / "framework_knowledge.sqlite")
-    try:
-        store.replace_rules(FrameworkLearner(minimum_evidence=3).learn(repository))
-        rules, context = retrieve_service_context(store, repository)
-    except ValueError as error:
-        return {"status": "failed", **_event(state, f"context_unavailable:{error}")}
-    finally:
-        store.close()
-    return {
-        "framework_rules": rules,
-        "coding_context": context,
-        **_event(state, f"context_retrieved:rules={len(rules)} examples={len(context.examples)}"),
-    }
-
-
-def plan_change(state: DevelopmentState) -> dict[str, Any]:
-    context = state.get("coding_context")
-    if context is None:
-        return {"status": "failed", **_event(state, "no_coding_context")}
-    return {
-        "plan": f"Create CustomerAccountService using {len(context.imports)} learned imports",
-        **_event(state, "plan_created"),
-    }
-
-
-def implement_change(state: DevelopmentState) -> dict[str, Any]:
-    generated = implement_service(
-        Path(state["repository"]), "CustomerAccountService", state["coding_context"],
-        DeterministicPythonCodingModel(), poc_grant(),
-    )
-    return {"generated_files": generated, **_event(state, "implementation_written")}
-
-
-def build(state: DevelopmentState) -> dict[str, Any]:
-    result = run_build(Path(state["repository"]), poc_grant())
-    return {"build_result": result, **_event(state, f"build:{result.passed}")}
-
-
-def tests(state: DevelopmentState) -> dict[str, Any]:
-    result = run_tests(Path(state["repository"]), poc_grant())
-    return {"test_result": result, **_event(state, f"tests:{result.passed}")}
-
-
-def compliance(state: DevelopmentState) -> dict[str, Any]:
-    report = validate_service(Path(state["repository"]) / "app" / "customer_account_service.py", state["framework_rules"])
-    return {"validation_report": report, **_event(state, f"compliance:{report.passed}")}
-
-
-def finalize(state: DevelopmentState) -> dict[str, Any]:
-    succeeded = (
-        state.get("status") != "failed"
-        and bool(state.get("build_result") and state["build_result"].passed)
-        and bool(state.get("test_result") and state["test_result"].passed)
-        and bool(state.get("validation_report") and state["validation_report"].passed)
-    )
-    return {"status": "succeeded" if succeeded else "failed", **_event(state, "finalized")}
-
-
-def _after_task(state: DevelopmentState) -> str:
-    return "learn" if state.get("status") != "failed" else "finalize"
-
-
-def _after_plan(state: DevelopmentState) -> str:
-    return "implement" if state.get("status") != "failed" else "finalize"
-
-
-def _after_build(state: DevelopmentState) -> str:
-    return "tests" if state["build_result"].passed else "finalize"
-
-
-def _after_tests(state: DevelopmentState) -> str:
-    return "compliance" if state["test_result"].passed else "finalize"
-
-
+class DevelopmentState(TypedDict,total=False):
+ workspace:str; repository:str; task:str; specification:DevelopmentTask; framework_rules:list[FrameworkRule]; coding_context:CodingContext; generated_change:GeneratedChange; generated_files:list[str]; build_result:CommandResult; test_result:CommandResult; validation_report:ValidationReport; status:str; events:list[str]
+def event(state,text): return {"events":[*state.get("events",[]),text]}
+def parse_task(state):
+ try:return {"specification":parse_development_task(state["task"]),**event(state,"task_parsed")}
+ except TaskParseError:return {"status":"failed",**event(state,"task_unsupported")}
+def retrieve(state):
+ store=SQLiteKnowledgeStore(Path(state["workspace"])/"framework_knowledge.sqlite")
+ try:
+  store.replace_rules(FrameworkLearner().learn(Path(state["repository"]))); rules,context=retrieve_service_context(store,Path(state["repository"])); return {"framework_rules":rules,"coding_context":context,**event(state,"framework_retrieved")}
+ finally: store.close()
+def generate(state): return {"generated_change":DeterministicPythonCodingModel().generate_change(state["specification"],state["coding_context"]),**event(state,"change_generated")}
+def apply(state): return {"generated_files":apply_change(state["generated_change"],Path(state["repository"]),poc_grant()),**event(state,"change_applied")}
+def build(state): return {"build_result":run_build(Path(state["repository"]),poc_grant())}
+def tests(state): return {"test_result":run_tests(Path(state["repository"]),poc_grant())}
+def compliance(state):
+ path=Path(state["repository"])/state["generated_files"][0]; return {"validation_report":validate_service(path,state["framework_rules"])}
+def final(state): return {"status":"succeeded" if all(state.get(k) and state[k].passed for k in ("build_result","test_result","validation_report")) else "failed"}
+def route(state): return "retrieve" if state.get("status")!="failed" else "final"
+def ok(key,next_name): return lambda s: next_name if s[key].passed else "final"
 def build_graph():
-    graph = StateGraph(DevelopmentState)
-    graph.add_node("analyze_task", analyze_task)
-    graph.add_node("learn", learn_and_retrieve)
-    graph.add_node("plan", plan_change)
-    graph.add_node("implement", implement_change)
-    graph.add_node("build", build)
-    graph.add_node("tests", tests)
-    graph.add_node("compliance", compliance)
-    graph.add_node("finalize", finalize)
-    graph.add_edge(START, "analyze_task")
-    graph.add_conditional_edges("analyze_task", _after_task, {"learn": "learn", "finalize": "finalize"})
-    graph.add_edge("learn", "plan")
-    graph.add_conditional_edges("plan", _after_plan, {"implement": "implement", "finalize": "finalize"})
-    graph.add_edge("implement", "build")
-    graph.add_conditional_edges("build", _after_build, {"tests": "tests", "finalize": "finalize"})
-    graph.add_conditional_edges("tests", _after_tests, {"compliance": "compliance", "finalize": "finalize"})
-    graph.add_edge("compliance", "finalize")
-    graph.add_edge("finalize", END)
-    return graph.compile()
-
-
-def run_development_task(workspace: Path, repository: Path, task: str = "Create CustomerAccountService") -> DevelopmentState:
-    initial: DevelopmentState = {
-        "workspace": str(workspace), "repository": str(repository), "task": task,
-        "events": [], "status": "running",
-    }
-    return build_graph().invoke(initial)
-
-
-def run_poc(workspace: Path, sample_name: str = "sample_customer_repo") -> DevelopmentState:
-    """Copy a selected real customer repository and execute the complete graph."""
-    root = Path(__file__).resolve().parents[3]
-    repository = workspace / "customer-repo"
-    shutil.copytree(root / "examples" / sample_name, repository)
-    return run_development_task(workspace, repository)
+ g=StateGraph(DevelopmentState); [g.add_node(n,f) for n,f in [("parse",parse_task),("retrieve",retrieve),("generate",generate),("apply",apply),("build",build),("tests",tests),("compliance",compliance),("final",final)]]; g.add_edge(START,"parse"); g.add_conditional_edges("parse",route,{"retrieve":"retrieve","final":"final"}); g.add_edge("retrieve","generate"); g.add_edge("generate","apply"); g.add_edge("apply","build"); g.add_conditional_edges("build",ok("build_result","tests"),{"tests":"tests","final":"final"}); g.add_conditional_edges("tests",ok("test_result","compliance"),{"compliance":"compliance","final":"final"}); g.add_edge("compliance","final"); g.add_edge("final",END); return g.compile()
+def run_development_task(workspace,repository,task="Create GeneratedService"):
+ return build_graph().invoke({"workspace":str(workspace),"repository":str(repository),"task":task,"events":[],"status":"running"})
+def run_poc(workspace,sample_name="sample_customer_repo",task="Create CustomerAccountService with method get_account(account_id)"):
+ repository=workspace/"customer-repo"; shutil.copytree(Path(__file__).resolve().parents[3]/"examples"/sample_name,repository); return run_development_task(workspace,repository,task)
