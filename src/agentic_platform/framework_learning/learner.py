@@ -1,141 +1,34 @@
-"""Deterministic Python AST-based framework pattern discovery."""
-from __future__ import annotations
-
 import ast
 from collections import defaultdict
 from pathlib import Path
-
-from agentic_platform.domain.models import Evidence, FrameworkRule, RuleStatus
-
-
+from agentic_platform.domain.models import Evidence, FrameworkRule
 class FrameworkLearner:
-    """Learns repeated service structures without knowing customer symbols."""
-
-    def __init__(self, minimum_evidence: int = 3) -> None:
-        self.minimum_evidence = minimum_evidence
-
-    def learn(self, repository: Path) -> list[FrameworkRule]:
-        observations: dict[str, dict[tuple[str, str], list[Evidence]]] = defaultdict(lambda: defaultdict(list))
-        service_count = 0
-        for source_path in repository.rglob("*.py"):
-            if any(part in {".git", ".venv", "__pycache__", "tests"} for part in source_path.parts):
-                continue
-            source = source_path.read_text(encoding="utf-8")
-            tree = ast.parse(source, filename=str(source_path))
-            relative = source_path.relative_to(repository).as_posix()
-            imports = self._imports(tree)
-            for service in (
-                node for node in tree.body
-                if isinstance(node, ast.ClassDef) and node.name.endswith("Service")
-                and (node.bases or node.decorator_list)
-            ):
-                service_count += 1
-                self._observe_service_structure(observations, service, relative, imports)
-        return self._aggregate(observations, service_count)
-
-    def _observe_service_structure(
-        self,
-        observations: dict[str, dict[tuple[str, str], list[Evidence]]],
-        service: ast.ClassDef,
-        relative: str,
-        imports: dict[str, str],
-    ) -> None:
-        for base in service.bases:
-            symbol = self._name(base)
-            if symbol:
-                self._record(observations, "service.base_class", symbol, imports, relative, service.name, f"extends {symbol}")
-        for decorator in service.decorator_list:
-            symbol = self._name(decorator)
-            if symbol:
-                self._record(observations, "service.required_decorator", symbol, imports, relative, service.name, f"uses @{symbol}")
-
-        dependencies = self._constructor_dependencies(service)
-        for attribute, dependency in dependencies.items():
-            self._record(observations, "logging.logger_class", dependency, imports, relative, service.name, f"assigns self.{attribute}")
-            self._record(observations, "logging.logger_attribute", attribute, {}, relative, service.name, f"uses self.{attribute}")
-            for method in self._methods_called_on(service, attribute):
-                self._record(observations, "logging.required_method", method, {}, relative, service.name, f"calls self.{attribute}.{method}")
-
-    def _aggregate(
-        self,
-        observations: dict[str, dict[tuple[str, str], list[Evidence]]],
-        service_count: int,
-    ) -> list[FrameworkRule]:
-        rules: list[FrameworkRule] = []
-        for kind, by_value in observations.items():
-            for (expected_value, module), evidence in by_value.items():
-                support = len(evidence)
-                confidence = support / service_count if service_count else 0.0
-                rules.append(FrameworkRule(
-                    kind=kind,
-                    expected_value=expected_value,
-                    confidence=confidence,
-                    support_count=support,
-                    conflict_count=max(service_count - support, 0),
-                    evidence=tuple(evidence),
-                    metadata={"import_module": module} if module else {},
-                    status=RuleStatus.ACTIVE if support >= self.minimum_evidence and confidence >= 0.8 else RuleStatus.CANDIDATE,
-                ))
-        return rules
-
-    @staticmethod
-    def _record(
-        observations: dict[str, dict[tuple[str, str], list[Evidence]]],
-        kind: str,
-        value: str,
-        imports: dict[str, str],
-        path: str,
-        service: str,
-        observation: str,
-    ) -> None:
-        observations[kind][(value, imports.get(value, ""))].append(Evidence(path, service, observation))
-
-    @staticmethod
-    def _imports(tree: ast.Module) -> dict[str, str]:
-        imports: dict[str, str] = {}
-        for node in tree.body:
-            if isinstance(node, ast.ImportFrom) and node.module:
-                for alias in node.names:
-                    imports[alias.asname or alias.name] = node.module
-            elif isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports[alias.asname or alias.name.split(".")[0]] = alias.name
-        return imports
-
-    @staticmethod
-    def _constructor_dependencies(service: ast.ClassDef) -> dict[str, str]:
-        dependencies: dict[str, str] = {}
-        initializer = next((node for node in service.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"), None)
-        if initializer is None:
-            return dependencies
-        for node in ast.walk(initializer):
-            if not isinstance(node, ast.Assign) or not isinstance(node.value, ast.Call):
-                continue
-            if not isinstance(node.value.func, ast.Name):
-                continue
-            for target in node.targets:
-                if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
-                    dependencies[target.attr] = node.value.func.id
-        return dependencies
-
-    @staticmethod
-    def _methods_called_on(service: ast.ClassDef, attribute: str) -> set[str]:
-        methods: set[str] = set()
-        for node in ast.walk(service):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            receiver = node.func.value
-            if isinstance(receiver, ast.Attribute) and isinstance(receiver.value, ast.Name):
-                if receiver.value.id == "self" and receiver.attr == attribute:
-                    methods.add(node.func.attr)
-        return methods
-
-    @staticmethod
-    def _name(node: ast.expr) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        if isinstance(node, ast.Call):
-            return FrameworkLearner._name(node.func)
-        return ""
+ def __init__(self,minimum_evidence=3): self.minimum_evidence=minimum_evidence
+ def learn(self,repository:Path):
+  obs=defaultdict(lambda:defaultdict(list)); count=0
+  for path in repository.rglob('*.py'):
+   if 'tests' in path.parts: continue
+   src=path.read_text(); tree=ast.parse(src); imports={a.asname or a.name:n.module for n in tree.body if isinstance(n,ast.ImportFrom) and n.module for a in n.names}
+   for cls in [n for n in tree.body if isinstance(n,ast.ClassDef) and n.name.endswith('Service') and (n.bases or n.decorator_list)]:
+    count+=1; rel=path.relative_to(repository).as_posix()
+    for kind,nodes in [('service.base_class',cls.bases),('service.required_decorator',cls.decorator_list)]:
+     for n in nodes:
+      v=n.id if isinstance(n,ast.Name) else ''; obs[kind][v,imports.get(v,'')].append(Evidence(rel,cls.name,v))
+    deps={}
+    init=next((n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='__init__'),None)
+    for n in ast.walk(init) if init else []:
+     if isinstance(n,ast.Assign) and isinstance(n.value,ast.Call) and isinstance(n.value.func,ast.Name):
+      for t in n.targets:
+       if isinstance(t,ast.Attribute) and isinstance(t.value,ast.Name) and t.value.id=='self': deps[t.attr]=n.value.func.id
+    for attr,typ in deps.items():
+     methods=sorted({n.func.attr for n in ast.walk(cls) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and isinstance(n.func.value,ast.Attribute) and isinstance(n.func.value.value,ast.Name) and n.func.value.value.id=='self' and n.func.value.attr==attr})
+     obs['dependency.constructor'][attr].append((Evidence(rel,cls.name,attr),typ,imports.get(typ,''),methods))
+  rules=[]
+  for kind,items in obs.items():
+   for key,vals in items.items():
+    if kind=='dependency.constructor':
+     ev=[x[0] for x in vals]; types=sorted({x[1] for x in vals}); mods=sorted({x[2] for x in vals if x[2]}); methods=sorted({m for x in vals for m in x[3]}); meta={'concrete_types':types,'import_modules':mods,'usage_methods':methods,'type_pattern':('*'+types[0].split(types[0].rstrip('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'))[-1] if False else ('*'+next((t[t.rfind('Repository'):] for t in types if t.endswith('Repository')), next((t[t.rfind('Mapper'):] for t in types if t.endswith('Mapper')), ''))))}; value=key
+     if not meta['type_pattern']: meta.pop('type_pattern')
+    else: ev=vals; value=key[0]; meta={'import_module':key[1]} if key[1] else {}
+    support=len(ev); rules.append(FrameworkRule(kind,value,support/count,support,count-support,tuple(ev),meta))
+  return rules

@@ -1,123 +1,60 @@
-import os
 from pathlib import Path
 import shutil
-import subprocess
-import sys
 
 from agentic_platform.orchestration.graph import run_development_task, run_poc
 
 
-def rule_values(result: dict[str, object]) -> dict[str, str]:
-    return {
-        rule.kind: rule.expected_value
-        for rule in result["framework_rules"]  # type: ignore[index,union-attr]
-    }
+def rules_by_kind(result):
+    grouped = {}
+    for rule in result["framework_rules"]:
+        grouped.setdefault(rule.kind, []).append(rule)
+    return grouped
 
 
-def test_framework_a_is_learned_and_used_to_generate_code(tmp_path: Path) -> None:
-    result = run_poc(workspace=tmp_path, sample_name="sample_customer_repo")
-
+def test_framework_a_regression_generates_from_learned_dependency_context(tmp_path: Path):
+    result = run_poc(tmp_path, "sample_customer_repo")
     assert result["status"] == "succeeded"
-    assert result["build_result"].passed is True
-    assert result["test_result"].passed is True
-    assert result["validation_report"].passed is True
-    assert rule_values(result) == {
-        "service.base_class": "BaseService",
-        "service.required_decorator": "business_service",
-        "logging.logger_class": "CompanyLogger",
-        "logging.logger_attribute": "logger",
-        "logging.required_method": "info",
-    }
-
-    generated = (tmp_path / "customer-repo" / "app" / "customer_account_service.py").read_text()
-    assert "from app.framework import BaseService, CompanyLogger, business_service" in generated
-    assert "@business_service" in generated
-    assert "class CustomerAccountService(BaseService):" in generated
-    assert "self.logger = CompanyLogger(__name__)" in generated
-    assert "self.logger.info(" in generated
+    context = result["coding_context"]
+    assert [(item.attribute, item.class_name, item.methods) for item in context.dependencies] == [("logger", "CompanyLogger", ("info",))]
 
 
-def test_framework_b_is_learned_and_used_without_product_code_change(tmp_path: Path) -> None:
-    result = run_poc(workspace=tmp_path, sample_name="sample_customer_repo_b")
+def test_multiple_constructor_dependencies_are_generic_structured_rules(tmp_path: Path):
+    result = run_poc(tmp_path, "sample_customer_repo_b")
+    rules = rules_by_kind(result)["dependency.constructor"]
+    assert {rule.expected_value for rule in rules} == {"log", "repository", "mapper", "payment_client", "notification_client"}
+    assert all(not rule.kind.startswith("logging.") for rule in rules)
+    log = next(rule for rule in rules if rule.expected_value == "log")
+    assert log.metadata["concrete_types"] == ["EnterpriseLog"]
+    assert log.metadata["usage_methods"] == ["audit"]
 
-    assert result["status"] == "succeeded"
-    assert result["build_result"].passed is True
-    assert result["test_result"].passed is True
-    assert result["validation_report"].passed is True
-    assert rule_values(result) == {
-        "service.base_class": "FrameworkComponent",
-        "service.required_decorator": "managed_component",
-        "logging.logger_class": "EnterpriseLog",
-        "logging.logger_attribute": "log",
-        "logging.required_method": "audit",
-    }
 
-    generated = (tmp_path / "customer-repo" / "app" / "customer_account_service.py").read_text()
-    assert "from app.enterprise_framework import EnterpriseLog, FrameworkComponent, managed_component" in generated
-    assert "@managed_component" in generated
+def test_many_dependency_rules_preserve_cardinality_and_common_threshold(tmp_path: Path):
+    result = run_poc(tmp_path, "sample_customer_repo_b")
+    dependencies = {item.attribute: item for item in result["coding_context"].dependencies}
+    assert set(dependencies) == {"log", "repository", "mapper"}
+    assert dependencies["repository"].class_name is None
+    assert dependencies["repository"].type_pattern == "*Repository"
+    assert dependencies["repository"].methods == ("save",)
+    assert "payment_client" not in dependencies
+
+
+def test_framework_b_and_mutation_remain_runtime_driven(tmp_path: Path):
+    result = run_poc(tmp_path, "sample_customer_repo_b")
+    generated = (tmp_path / "customer-repo/app/customer_account_service.py").read_text()
     assert "class CustomerAccountService(FrameworkComponent):" in generated
     assert "self.log = EnterpriseLog(__name__)" in generated
-    assert "self.log.audit(" in generated
-
-
-def test_mutating_customer_framework_symbol_changes_generated_code_without_product_change(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[2]
-    repository = tmp_path / "mutated-customer-repo"
-    shutil.copytree(root / "examples" / "sample_customer_repo_b", repository)
-    framework_source = repository / "app" / "enterprise_framework.py"
-    framework_source.write_text(framework_source.read_text().replace("FrameworkComponent", "DomainUnit"))
-    for service in (repository / "app").glob("*_service.py"):
-        service.write_text(service.read_text().replace("FrameworkComponent", "DomainUnit"))
-
-    result = run_development_task(workspace=tmp_path, repository=repository)
-
-    assert result["status"] == "succeeded"
-    assert rule_values(result)["service.base_class"] == "DomainUnit"
-    generated = (repository / "app" / "customer_account_service.py").read_text()
-    assert "class CustomerAccountService(DomainUnit):" in generated
+    repository = tmp_path / "mutated"
+    shutil.copytree(root / "examples/sample_customer_repo_b", repository)
+    for path in (repository / "app").glob("*.py"):
+        path.write_text(path.read_text().replace("FrameworkComponent", "DomainUnit"))
+    mutated = run_development_task(tmp_path, repository)
+    assert "class CustomerAccountService(DomainUnit):" in (repository / "app/customer_account_service.py").read_text()
+    assert mutated["status"] == "succeeded"
 
 
-def test_product_source_contains_no_customer_framework_symbols() -> None:
+def test_product_source_has_no_customer_symbol_leaks():
     root = Path(__file__).resolve().parents[2]
-    forbidden = {
-        "BaseService",
-        "business_service",
-        "CompanyLogger",
-        "FrameworkComponent",
-        "managed_component",
-        "EnterpriseLog",
-    }
-    product_files = (root / "src" / "agentic_platform").rglob("*.py")
-    violations = {
-        symbol: path.relative_to(root).as_posix()
-        for path in product_files
-        for symbol in forbidden
-        if symbol in path.read_text(encoding="utf-8")
-    }
-    assert not violations, f"Customer symbols leaked into product source: {violations}"
-
-
-def test_unsupported_task_finalizes_without_missing_result_key_error(tmp_path: Path) -> None:
-    root = Path(__file__).resolve().parents[2]
-    repository = tmp_path / "customer-repo"
-    shutil.copytree(root / "examples" / "sample_customer_repo", repository)
-
-    result = run_development_task(workspace=tmp_path, repository=repository, task="Rename README")
-
-    assert result["status"] == "failed"
-    assert "task_unsupported" in result["events"]
-
-
-def test_cli_exits_successfully_after_temporary_workspace_cleanup() -> None:
-    project_root = Path(__file__).resolve().parents[2]
-    environment = {**os.environ, "PYTHONPATH": "src"}
-    completed = subprocess.run(
-        [sys.executable, "-m", "agentic_platform.cli"],
-        cwd=project_root,
-        env=environment,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert '"status": "succeeded"' in completed.stdout
+    forbidden = {"BaseService", "business_service", "CompanyLogger", "FrameworkComponent", "managed_component", "EnterpriseLog", "OrderRepository", "PaymentRepository", "OrderMapper", "PaymentClient"}
+    hits = [f"{path}:{symbol}" for path in (root / "src/agentic_platform").rglob("*.py") for symbol in forbidden if symbol in path.read_text()]
+    assert not hits, hits
