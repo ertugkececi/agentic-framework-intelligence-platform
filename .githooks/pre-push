@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+marker=".hermes/runtime/checker-approval.json"
+if [ ! -f "$marker" ]; then
+  echo "Push blocked: missing checker approval marker: $marker" >&2
+  exit 1
+fi
+expected=$(git rev-parse HEAD)
+reviewed=$(python -c "import json; print(json.load(open('$marker', encoding='utf-8')).get('reviewed_head', ''))")
+status=$(python -c "import json; print(json.load(open('$marker', encoding='utf-8')).get('status', ''))")
+if [ "$status" != "PASS" ] || [ "$reviewed" != "$expected" ]; then
+  echo "Push blocked: checker approval is missing, failed, or stale." >&2
+  exit 1
+fi

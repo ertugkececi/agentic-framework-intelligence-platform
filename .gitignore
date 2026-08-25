@@ -14,6 +14,9 @@ venv/
 .poc-run/
 *.sqlite
 
+# Hermes local review state
+.hermes/runtime/
+
 # IDE / OS
 .idea/
 .vscode/
