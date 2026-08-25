@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "agentic-framework-intelligence-platform"
+version = "0.1.0"
+description = "On-premise Framework Intelligence and LangGraph development PoC"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=0.2,<1",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentic_platform"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
