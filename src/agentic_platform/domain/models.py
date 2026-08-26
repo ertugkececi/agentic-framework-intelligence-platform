@@ -119,6 +119,7 @@ class CommandResult:
     passed: bool
     command: tuple[str, ...]
     output: str
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)

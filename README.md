@@ -175,7 +175,11 @@ Kalıcı çalıştırma artefact’ları:
 
 ## Güvenlik ve sınırlar
 
-PoC yalnızca repository read/write, build, test ve validation capability’lerini verir. `shell_command`, `database_write`, `git_commit` ve `git_push` varsayılan capability grant içinde değildir.
+PoC yalnızca **güvenilen local repository** path’leri için tasarlanmıştır. `develop` çalışması customer checkout üzerinde model değişikliği uygulamaz: her run workspace altında disposable `.development-staging/<run-id>` kopyası oluşturur; generate/repair apply, fixed build, pytest ve AST compliance yalnızca bu kopyada çalışır. Başarılı bütün gate’lerden sonra yalnızca yeni ve allowlisted (`app/`, `tests/`) generated dosyalar customer repository’ye publish edilir. Mevcut customer dosyasının üzerine yazmak varsayılan olarak reddedilir. Başarısızlıkta staging temizlenir ve customer tree değiştirilmez.
+
+DevelopmentService caller-supplied, canonical repository root’a bağlı immutable capability grant kabul eder; write, build, test veya static analysis izni eksikse ya da root uyuşmazsa model/command/write çalıştırılmadan fail eder. CLI/local helper compatibility boundary’de açık local-demo grant yaratır. `shell_command`, `database_write`, `git_commit` ve `git_push` varsayılan grant içinde değildir.
+
+Build ve test komutları sabit allowlisttedir (`compileall app` ve `pytest -q`); arbitrary shell yoktur. Her komut configurable hard timeout ve deterministic bounded output capture kullanır. Timeout structured failed result döndürür; failure/repair output API-key assignment, bearer token ve URL credentials gibi yaygın secret biçimleri için `[REDACTED]` ile redakte edilir.
 
 Bu iterasyonun kasıtlı limitleri:
 

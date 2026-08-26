@@ -6,6 +6,7 @@ import pytest
 from agentic_platform.domain.models import CommandResult, ValidationReport
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.orchestration.graph import DevelopmentService, FrameworkLearningService, run_poc
+from agentic_platform.security.policy import poc_grant
 from agentic_platform.retrieval.context import AmbiguousFrameworkRuleError
 from agentic_platform.retrieval.context import build_source_index, retrieve_service_context, tokenize_identifier
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
@@ -123,7 +124,7 @@ def test_development_run_keeps_matching_pattern_candidates_and_rules_store_read_
         build_runner=lambda repository, grant: passed,
         test_runner=lambda repository, grant: passed,
         validator=lambda path, rules: ValidationReport(True),
-    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)")
+    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)", grant=poc_grant(repository))
 
     assert [(item.attribute, item.class_name) for item in result["coding_context"].unresolved_dependencies] == [
         ("converter", "PaymentConverter"),
@@ -148,7 +149,7 @@ def test_development_run_excludes_candidate_that_misses_attribute_type_pattern(t
         build_runner=lambda repository, grant: passed,
         test_runner=lambda repository, grant: passed,
         validator=lambda path, rules: ValidationReport(True),
-    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)")
+    ).run(tmp_path, repository, "Create PaymentHistoryService with method list_history(customer_id)", grant=poc_grant(repository))
 
     assert [(item.attribute, item.class_name) for item in result["coding_context"].unresolved_dependencies] == [
         ("converter", "PaymentConverter"),
@@ -166,7 +167,7 @@ def test_development_run_preserves_ambiguous_pattern_dependencies(tmp_path: Path
         build_runner=lambda repository, grant: passed,
         test_runner=lambda repository, grant: passed,
         validator=lambda path, rules: ValidationReport(True),
-    ).run(tmp_path, repository, "Create StorageService")
+    ).run(tmp_path, repository, "Create StorageService", grant=poc_grant(repository))
 
     storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
     assert storage.class_name is None

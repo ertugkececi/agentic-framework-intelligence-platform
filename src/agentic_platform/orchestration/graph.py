@@ -1,37 +1,60 @@
-"""Offline framework learning and online LangGraph development workflows."""
+"""Offline framework learning and safe online LangGraph development workflows."""
 from __future__ import annotations
 
+import re
 import shutil
+import uuid
+from functools import partial
 from pathlib import Path
 from typing import Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from agentic_platform.domain.models import (
-    CodingContext,
-    CommandResult,
-    FrameworkRule,
-    ValidationReport,
-)
+from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationFinding, ValidationReport
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
 from agentic_platform.retrieval.context import retrieve_service_context
-from agentic_platform.security.policy import poc_grant
+from agentic_platform.security.policy import (
+    Capability,
+    CapabilityGrant,
+    _StagingAuthorization,
+    _create_staging_authorization,
+    _register_staging_copy,
+    _revoke_staging_authorization,
+    poc_grant,
+)
 from agentic_platform.tasks.parser import TaskParseError, parse_development_task
 from agentic_platform.tasks.types import DevelopmentTask, GeneratedChange
-from agentic_platform.tools.changes import apply_change
-from agentic_platform.tools.repository_tools import run_build, run_tests
+from agentic_platform.tools.changes import ChangeValidationError, apply_change
+from agentic_platform.tools.repository_tools import (
+    DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    DEFAULT_MAX_COMMAND_OUTPUT,
+    run_build,
+    run_tests,
+)
 from agentic_platform.validation.compliance import validate_service
-
 
 DEFAULT_RETRY_BUDGET = 2
 DEFAULT_MAX_FAILURE_OUTPUT = 2_000
+_SECRET_ASSIGNMENT = re.compile(
+    r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*[=:]\s*)([^\s,;]+)",
+)
+_SECRET_JSON_ASSIGNMENT = re.compile(
+    r'(?i)(")([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)("\s*:\s*)(")(?:\\.|[^"\\])*(")',
+)
+_SECRET_PATTERNS = (
+    re.compile(r"(?i)\bBearer\s+[^\s,;]+"),
+    re.compile(r"(?i)\bhttps?://[^\s/@:]+:[^\s/@]+@"),
+)
 
 
 class DevelopmentState(TypedDict, total=False):
     workspace: str
     repository: str
+    staging_repository: str
+    staging_authorization: _StagingAuthorization
+    grant: CapabilityGrant
     task: str
     specification: DevelopmentTask
     framework_rules: list[FrameworkRule]
@@ -60,7 +83,6 @@ class FrameworkLearningService:
         return workspace / "framework_knowledge.sqlite"
 
     def learn(self, workspace: Path, repository: Path) -> list[FrameworkRule]:
-        """Discover rules once and persist them for later online development runs."""
         workspace.mkdir(parents=True, exist_ok=True)
         rules = self._learner.learn(repository)
         store = SQLiteKnowledgeStore(self.database_path(workspace))
@@ -72,25 +94,29 @@ class FrameworkLearningService:
 
 
 class DevelopmentService:
-    """Online workflow that retrieves already learned knowledge and develops a task."""
+    """Generate and verify in a disposable copy, then atomically publish new files only."""
 
     def __init__(
         self,
         *,
         model_factory: Callable[[], CodingModel] = DeterministicPythonCodingModel,
-        build_runner: Callable[[Path, object], CommandResult] = run_build,
-        test_runner: Callable[[Path, object], CommandResult] = run_tests,
+        build_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
+        test_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         validator: Callable[[Path, list[FrameworkRule]], ValidationReport] = validate_service,
         max_failure_output: int = DEFAULT_MAX_FAILURE_OUTPUT,
+        command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT,
     ) -> None:
-        if max_failure_output < 1:
-            raise ValueError("max_failure_output must be positive")
+        if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
+            raise ValueError("failure output, command timeout, and command output limits must be positive")
         self._model_factory = model_factory
         self._model: CodingModel | None = None
         self._build_runner = build_runner
         self._test_runner = test_runner
         self._validator = validator
         self._max_failure_output = max_failure_output
+        self._command_timeout_seconds = command_timeout_seconds
+        self._max_command_output = max_command_output
 
     def run(
         self,
@@ -98,56 +124,79 @@ class DevelopmentService:
         repository: Path,
         task: str = "Create GeneratedService",
         retry_budget: int = DEFAULT_RETRY_BUDGET,
+        *,
+        grant: CapabilityGrant | None = None,
     ) -> DevelopmentState:
+        """Run against a staging copy only with a caller-supplied capability grant."""
         if retry_budget < 0:
             raise ValueError("retry_budget must not be negative")
+        repository = repository.resolve()
+        if not isinstance(grant, CapabilityGrant):
+            return {"repository": str(repository), "task": task, "status": "failed", "events": ["capability_grant_required"]}
+        denied = self._preflight(grant, repository)
+        if denied:
+            return {"repository": str(repository), "task": task, "status": "failed", "events": [denied]}
+        stage = workspace.resolve() / ".development-staging" / uuid.uuid4().hex
+        staging_authorization: _StagingAuthorization | None = None
         self._model = None
         try:
-            return self.build_graph().invoke(
-                {
-                    "workspace": str(workspace),
-                    "repository": str(repository),
-                    "task": task,
-                    "retry_count": 0,
-                    "retry_budget": retry_budget,
-                    "failure_history": (),
-                    "events": [],
-                    "status": "running",
-                }
-            )
+            shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
+            lifecycle = _register_staging_copy(workspace, repository, stage)
+            staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
+            return self.build_graph().invoke({
+                "workspace": str(workspace.resolve()), "repository": str(repository),
+                "staging_repository": str(stage), "staging_authorization": staging_authorization,
+                "grant": grant, "task": task,
+                "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
+                "events": [], "status": "running",
+            })
         finally:
             self._model = None
+            _revoke_staging_authorization(staging_authorization)
+            shutil.rmtree(stage, ignore_errors=True)
+            parent = stage.parent
+            if parent.exists() and not any(parent.iterdir()):
+                parent.rmdir()
+
+    @staticmethod
+    def _preflight(grant: CapabilityGrant, repository: Path) -> str | None:
+        try:
+            grant.require_repository(repository)
+            for capability in (
+                Capability.READ_REPOSITORY,
+                Capability.WRITE_REPOSITORY,
+                Capability.RUN_BUILD,
+                Capability.RUN_TEST,
+                Capability.STATIC_ANALYSIS,
+            ):
+                grant.require(capability)
+        except PermissionError as error:
+            return "capability_repository_mismatch" if "mismatch" in str(error) else "capability_denied"
+        return None
 
     def build_graph(self):
         graph = StateGraph(DevelopmentState)
         for name, node in (
-            ("parse", self._parse_task),
-            ("retrieve", self._retrieve),
-            ("generate", self._generate),
-            ("repair", self._repair),
-            ("apply", self._apply),
-            ("build", self._build),
-            ("build_failure", self._record_build_failure),
-            ("tests", self._tests),
-            ("test_failure", self._record_test_failure),
-            ("compliance", self._compliance),
-            ("compliance_failure", self._record_compliance_failure),
-            ("final", self._final),
+            ("parse", self._parse_task), ("retrieve", self._retrieve), ("generate", self._generate),
+            ("repair", self._repair), ("apply", self._apply), ("build", self._build),
+            ("build_failure", self._record_build_failure), ("tests", self._tests),
+            ("test_failure", self._record_test_failure), ("compliance", self._compliance),
+            ("compliance_failure", self._record_compliance_failure), ("publish", self._publish), ("final", self._final),
         ):
             graph.add_node(name, node)
-
         graph.add_edge(START, "parse")
         graph.add_conditional_edges("parse", self._after_parse, {"retrieve": "retrieve", "final": "final"})
         graph.add_conditional_edges("retrieve", self._after_retrieve, {"generate": "generate", "final": "final"})
         graph.add_conditional_edges("generate", self._after_model, {"apply": "apply", "final": "final"})
-        graph.add_edge("apply", "build")
+        graph.add_conditional_edges("apply", self._after_apply, {"build": "build", "final": "final"})
         graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
         graph.add_conditional_edges("build_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("tests", self._after_tests, {"compliance": "compliance", "failure": "test_failure"})
         graph.add_conditional_edges("test_failure", self._after_failure, {"repair": "repair", "final": "final"})
-        graph.add_conditional_edges("compliance", self._after_compliance, {"final": "final", "failure": "compliance_failure"})
+        graph.add_conditional_edges("compliance", self._after_compliance, {"publish": "publish", "failure": "compliance_failure"})
         graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("repair", self._after_model, {"apply": "apply", "final": "final"})
+        graph.add_edge("publish", "final")
         graph.add_edge("final", END)
         return graph.compile()
 
@@ -157,10 +206,7 @@ class DevelopmentService:
 
     def _parse_task(self, state: DevelopmentState) -> dict[str, object]:
         try:
-            return {
-                "specification": parse_development_task(state["task"]),
-                **self._event(state, "task_parsed"),
-            }
+            return {"specification": parse_development_task(state["task"]), **self._event(state, "task_parsed")}
         except TaskParseError:
             return {"status": "failed", **self._event(state, "task_unsupported")}
 
@@ -169,7 +215,6 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "retrieve"
 
     def _retrieve(self, state: DevelopmentState) -> dict[str, object]:
-        """Online retrieval only: learning belongs to FrameworkLearningService."""
         database_path = FrameworkLearningService.database_path(Path(state["workspace"]))
         if not database_path.exists():
             return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
@@ -177,11 +222,7 @@ class DevelopmentService:
         try:
             if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
                 return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
-            rules, context = retrieve_service_context(
-                store,
-                Path(state["repository"]),
-                state["specification"],
-            )
+            rules, context = retrieve_service_context(store, Path(state["repository"]), state["specification"])
         except ValueError:
             return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
         finally:
@@ -201,19 +242,10 @@ class DevelopmentService:
 
     def _repair(self, state: DevelopmentState) -> dict[str, object]:
         try:
-            change = self._current_model().repair_change(
-                state["specification"],
-                state["coding_context"],
-                state["generated_change"],
-                state["failure_context"],
-            )
+            change = self._current_model().repair_change(state["specification"], state["coding_context"], state["generated_change"], state["failure_context"])
         except CodingModelError:
             return {"status": "failed", **self._event(state, "model_repair_failed")}
-        return {
-            "generated_change": change,
-            "retry_count": state["retry_count"] + 1,
-            **self._event(state, "change_repaired"),
-        }
+        return {"generated_change": change, "retry_count": state["retry_count"] + 1, **self._event(state, "change_repaired")}
 
     def _current_model(self) -> CodingModel:
         if self._model is None:
@@ -225,26 +257,50 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "apply"
 
     def _apply(self, state: DevelopmentState) -> dict[str, object]:
-        files = apply_change(state["generated_change"], Path(state["repository"]), poc_grant())
-        return {"generated_files": files, **self._event(state, "change_applied")}
+        try:
+            files = apply_change(
+                state["generated_change"], Path(state["staging_repository"]), state["grant"],
+                allow_overwrite=True, staging_authorization=state["staging_authorization"],
+            )
+        except (ChangeValidationError, OSError, PermissionError):
+            return {"status": "failed", **self._event(state, "change_apply_failed")}
+        return {"generated_files": files, **self._event(state, "change_applied_to_staging")}
+
+    @staticmethod
+    def _after_apply(state: DevelopmentState) -> str:
+        return "final" if state.get("status") == "failed" else "build"
 
     def _build(self, state: DevelopmentState) -> dict[str, CommandResult]:
-        return {"build_result": self._run_command(self._build_runner, Path(state["repository"]))}
+        runner = self._build_runner or partial(
+            run_build, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
+            staging_authorization=state["staging_authorization"],
+        )
+        return {"build_result": self._run_command(runner, Path(state["staging_repository"]), state["grant"])}
 
     def _tests(self, state: DevelopmentState) -> dict[str, CommandResult]:
-        return {"test_result": self._run_command(self._test_runner, Path(state["repository"]))}
+        runner = self._test_runner or partial(
+            run_tests, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
+            staging_authorization=state["staging_authorization"],
+        )
+        return {"test_result": self._run_command(runner, Path(state["staging_repository"]), state["grant"])}
 
-    def _run_command(self, runner: Callable[[Path, object], CommandResult], repository: Path) -> CommandResult:
+    def _run_command(self, runner: Callable[[Path, CapabilityGrant], CommandResult], repository: Path, grant: CapabilityGrant) -> CommandResult:
         try:
-            return runner(repository, poc_grant())
+            result = runner(repository, grant)
+            return CommandResult(result.passed, result.command, self._redact(result.output), result.timed_out)
         except Exception as error:
-            return CommandResult(False, (), f"{type(error).__name__}: {error}")
+            return CommandResult(False, (), self._redact(f"{type(error).__name__}: {error}"))
 
     def _compliance(self, state: DevelopmentState) -> dict[str, ValidationReport]:
-        path = Path(state["repository"]) / state["generated_files"][0]
         try:
-            return {"validation_report": self._validator(path, state["framework_rules"])}
-        except Exception as error:
+            state["grant"].require(Capability.STATIC_ANALYSIS)
+            path = Path(state["staging_repository"]) / state["generated_files"][0]
+            report = self._validator(path, state["framework_rules"])
+            return {"validation_report": ValidationReport(
+                report.passed,
+                tuple(ValidationFinding(item.rule_kind, self._redact(item.message), item.severity) for item in report.findings),
+            )}
+        except Exception:
             return {"validation_report": ValidationReport(False)}
 
     @staticmethod
@@ -257,7 +313,14 @@ class DevelopmentService:
 
     @staticmethod
     def _after_compliance(state: DevelopmentState) -> str:
-        return "final" if state["validation_report"].passed else "failure"
+        return "publish" if state["validation_report"].passed else "failure"
+
+    def _publish(self, state: DevelopmentState) -> dict[str, object]:
+        try:
+            files = apply_change(state["generated_change"], Path(state["repository"]), state["grant"])
+        except (ChangeValidationError, OSError, PermissionError):
+            return {"status": "failed", **self._event(state, "publish_failed")}
+        return {"generated_files": files, **self._event(state, "change_published")}
 
     def _record_build_failure(self, state: DevelopmentState) -> dict[str, object]:
         result = state["build_result"]
@@ -269,69 +332,46 @@ class DevelopmentService:
 
     def _record_compliance_failure(self, state: DevelopmentState) -> dict[str, object]:
         report = state["validation_report"]
-        output = "; ".join(finding.message for finding in report.findings) or "compliance validation failed"
-        return self._record_failure(state, "compliance", (), output)
+        return self._record_failure(state, "compliance", (), "; ".join(item.message for item in report.findings) or "compliance validation failed")
 
-    def _record_failure(
-        self,
-        state: DevelopmentState,
-        stage: str,
-        command: tuple[str, ...],
-        output: str,
-    ) -> dict[str, object]:
+    def _record_failure(self, state: DevelopmentState, stage: str, command: tuple[str, ...], output: str) -> dict[str, object]:
         history = state.get("failure_history", ())
-        failure = FailureContext(
-            stage=stage,
-            attempt=len(history) + 1,
-            command=command,
-            output=output[: self._max_failure_output],
+        failure = FailureContext(stage, len(history) + 1, command, self._redact(output)[:self._max_failure_output])
+        return {"failure_context": failure, "failure_history": (*history, failure), **self._event(state, f"{stage}_failed")}
+
+    @staticmethod
+    def _redact(output: str) -> str:
+        redacted = _SECRET_JSON_ASSIGNMENT.sub(
+            lambda match: f'{match.group(1)}{match.group(2)}{match.group(3)}{match.group(4)}[REDACTED]{match.group(5)}',
+            output,
         )
-        history = (*history, failure)
-        return {
-            "failure_context": failure,
-            "failure_history": history,
-            **self._event(state, f"{stage}_failed"),
-        }
+        redacted = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+        for pattern in _SECRET_PATTERNS:
+            redacted = pattern.sub("[REDACTED]", redacted)
+        return redacted
 
     @staticmethod
     def _after_failure(state: DevelopmentState) -> str:
-        # The initial verification is allowed, followed by at most retry_budget repairs.
-        if state["retry_count"] >= state["retry_budget"]:
-            return "final"
-        return "repair"
+        return "final" if state["retry_count"] >= state["retry_budget"] else "repair"
 
     def _final(self, state: DevelopmentState) -> dict[str, object]:
-        if state.get("status") == "failed" and "specification" not in state:
-            return {"status": "failed"}
-        if all(state.get(key) and state[key].passed for key in ("build_result", "test_result", "validation_report")):
+        if all(state.get(key) and state[key].passed for key in ("build_result", "test_result", "validation_report")) and "change_published" in state.get("events", []):
             return {"status": "succeeded"}
-        failure = state.get("failure_context")
-        if failure and state["retry_count"] >= state["retry_budget"]:
+        if state.get("failure_context") and state["retry_count"] >= state["retry_budget"]:
             return {"status": "failed", **self._event(state, "retry_budget_exhausted")}
         return {"status": "failed"}
 
 
 def run_framework_learning(workspace: Path, repository: Path) -> list[FrameworkRule]:
-    """Public helper for the offline learning phase."""
     return FrameworkLearningService().learn(workspace, repository)
 
 
-def run_development_task(
-    workspace: Path,
-    repository: Path,
-    task: str = "Create GeneratedService",
-    retry_budget: int = DEFAULT_RETRY_BUDGET,
-) -> DevelopmentState:
-    """Run online development using knowledge learned in an earlier lifecycle phase."""
-    return DevelopmentService().run(workspace, repository, task, retry_budget)
+def run_development_task(workspace: Path, repository: Path, task: str = "Create GeneratedService", retry_budget: int = DEFAULT_RETRY_BUDGET) -> DevelopmentState:
+    """Public local composition boundary that explicitly constructs the demo grant."""
+    return DevelopmentService().run(workspace, repository, task, retry_budget, grant=poc_grant(repository))
 
 
-def run_poc(
-    workspace: Path,
-    sample_name: str,
-    task: str,
-    retry_budget: int = DEFAULT_RETRY_BUDGET,
-) -> DevelopmentState:
+def run_poc(workspace: Path, sample_name: str, task: str, retry_budget: int = DEFAULT_RETRY_BUDGET) -> DevelopmentState:
     repository = workspace / "customer-repo"
     shutil.copytree(Path(__file__).resolve().parents[3] / "examples" / sample_name, repository)
     run_framework_learning(workspace, repository)

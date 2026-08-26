@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, _StagingAuthorization
 from agentic_platform.tasks.types import GeneratedChange
 
 
@@ -15,8 +15,8 @@ ALLOWED_ROOTS = ("app", "tests")
 PROTECTED_NAMES = {".git", ".env", "secrets", "credentials"}
 
 
-def validate_change(change: GeneratedChange, repository: Path) -> None:
-    """Reject unsafe, duplicate, or empty model-proposed changes before writes."""
+def validate_change(change: GeneratedChange, repository: Path, *, reject_existing: bool = False) -> None:
+    """Reject unsafe, duplicate, empty, and optionally existing proposed paths."""
     paths: set[str] = set()
     root = repository.resolve()
     for file_change in change.files:
@@ -28,13 +28,26 @@ def validate_change(change: GeneratedChange, repository: Path) -> None:
             raise ChangeValidationError(file_change.path)
         if any(part in PROTECTED_NAMES or part.startswith(".env") for part in relative_path.parts):
             raise ChangeValidationError(file_change.path)
+        if reject_existing and target.exists():
+            raise ChangeValidationError(f"refusing to overwrite existing file: {file_change.path}")
         paths.add(file_change.path)
 
 
-def apply_change(change: GeneratedChange, repository: Path, grant: CapabilityGrant) -> list[str]:
-    """Apply a validated change only after the repository-write capability check."""
+def apply_change(
+    change: GeneratedChange,
+    repository: Path,
+    grant: CapabilityGrant,
+    *,
+    allow_overwrite: bool = False,
+    staging_authorization: _StagingAuthorization | None = None,
+) -> list[str]:
+    """Apply a validated change within the grant root or an exact internal stage."""
     grant.require(Capability.WRITE_REPOSITORY)
-    validate_change(change, repository)
+    if staging_authorization is None:
+        grant.require_repository(repository)
+    else:
+        staging_authorization.require_repository(grant, repository)
+    validate_change(change, repository, reject_existing=not allow_overwrite)
     for file_change in change.files:
         target = repository / file_change.path
         target.parent.mkdir(parents=True, exist_ok=True)
