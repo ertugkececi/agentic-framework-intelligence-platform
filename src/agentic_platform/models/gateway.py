@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from agentic_platform.domain.models import CodingContext
-from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
+from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange, ParameterSpec
 
 class CodingModelError(RuntimeError):
     """Provider-neutral boundary for failures while producing a coding change."""
@@ -50,7 +50,7 @@ class DeterministicPythonCodingModel:
     ) -> GeneratedChange:
         import_lines = self._render_imports(context)
         initializer = self._render_initializer(context)
-        method = self._render_operation(task)
+        method = self._render_operations(task, context)
         source = (
             f"{import_lines}\n\n@{context.service_decorator}\n"
             f"class {task.artifact_name}({context.service_base_class}):\n"
@@ -78,13 +78,17 @@ class DeterministicPythonCodingModel:
         return self.generate_change(task, context)
 
     def _render_imports(self, context: CodingContext) -> str:
-        grouped: dict[str, list[str]] = defaultdict(list)
+        grouped: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
         for item in context.imports:
-            grouped[item.module].append(item.symbol)
+            grouped[item.module].append((item.symbol, item.alias))
         return "\n".join(
-            f"from {module} import {', '.join(sorted(set(symbols)))}"
+            f"from {module} import {', '.join(self._render_import(symbol, alias) for symbol, alias in sorted(set(symbols)))}"
             for module, symbols in sorted(grouped.items())
         )
+
+    @staticmethod
+    def _render_import(symbol: str, alias: str | None) -> str:
+        return f"{symbol} as {alias}" if alias else symbol
 
     def _render_initializer(self, context: CodingContext) -> str:
         dependencies = [dependency for dependency in context.dependencies if dependency.class_name]
@@ -97,13 +101,43 @@ class DeterministicPythonCodingModel:
         )
         return f"    def __init__(self) -> None:\n{assignments}"
 
-    def _render_operation(self, task: DevelopmentTask) -> str:
+    def _render_operations(self, task: DevelopmentTask, context: CodingContext) -> str:
         if not task.operations:
             return "    pass"
-        operation = task.operations[0]
-        parameters = ", ".join(parameter.name for parameter in operation.parameters)
-        suffix = f", {parameters}" if parameters else ""
-        return f"    def {operation.name}(self{suffix}):\n        return None"
+        return "\n\n".join(self._render_operation(operation.name, operation.parameters, context) for operation in task.operations)
+
+    def _render_operation(
+        self,
+        name: str,
+        parameters: tuple[ParameterSpec, ...],
+        context: CodingContext,
+    ) -> str:
+        parameter_names = ", ".join(parameter.name for parameter in parameters)
+        suffix = f", {parameter_names}" if parameter_names else ""
+        invocations = [
+            f"        self.{dependency.attribute}.{requirement.method_name}"
+            f"({', '.join(self._render_argument(shape, name) for shape in requirement.argument_shapes)})"
+            for dependency in context.dependencies
+            for requirement in dependency.required_invocations
+        ]
+        body = [*invocations, "        return None"]
+        return f"    def {name}(self{suffix}):\n" + "\n".join(body)
+
+    @staticmethod
+    def _render_argument(shape: str, operation_name: str) -> str:
+        values = {
+            "string_literal": repr(f"{operation_name} invoked"),
+            "integer_literal": "0",
+            "float_literal": "0.0",
+            "boolean_literal": "True",
+            "none_literal": "None",
+            "empty_mapping": "{}",
+            "empty_sequence": "[]",
+        }
+        try:
+            return values[shape]
+        except KeyError as error:
+            raise CodingModelError(f"Unsupported learned invocation argument shape: {shape}") from error
 
     @staticmethod
     def _snake_case(value: str) -> str:

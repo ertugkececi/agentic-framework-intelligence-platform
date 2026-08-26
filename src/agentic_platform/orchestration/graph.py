@@ -14,7 +14,7 @@ from agentic_platform.domain.models import CodingContext, CommandResult, Framewo
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
-from agentic_platform.retrieval.context import retrieve_service_context
+from agentic_platform.retrieval.context import UnsupportedInvocationRequirementError, retrieve_service_context
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -136,6 +136,13 @@ class DevelopmentService:
         denied = self._preflight(grant, repository)
         if denied:
             return {"repository": str(repository), "task": task, "status": "failed", "events": [denied]}
+        if self._empty_task_requires_invocation(workspace, repository, task):
+            return {
+                "repository": str(repository),
+                "task": task,
+                "status": "failed",
+                "events": ["required_invocation_operation_missing"],
+            }
         stage = workspace.resolve() / ".development-staging" / uuid.uuid4().hex
         staging_authorization: _StagingAuthorization | None = None
         self._model = None
@@ -173,6 +180,33 @@ class DevelopmentService:
         except PermissionError as error:
             return "capability_repository_mismatch" if "mismatch" in str(error) else "capability_denied"
         return None
+
+    @staticmethod
+    def _empty_task_requires_invocation(workspace: Path, repository: Path, task: str) -> bool:
+        """Reject invocation-less tasks before creating a disposable staging copy."""
+        try:
+            specification = parse_development_task(task)
+        except TaskParseError:
+            return False
+        if specification.operations:
+            return False
+        database_path = FrameworkLearningService.database_path(workspace)
+        if not database_path.exists():
+            return False
+        store = SQLiteKnowledgeStore(database_path)
+        try:
+            if store.repository_fingerprint() != repository_fingerprint(repository):
+                return False
+            _, context = retrieve_service_context(store, repository, specification)
+        except (UnsupportedInvocationRequirementError, ValueError):
+            return False
+        finally:
+            store.close()
+        return any(
+            requirement.supported
+            for dependency in context.dependencies
+            for requirement in dependency.required_invocations
+        )
 
     def build_graph(self):
         graph = StateGraph(DevelopmentState)
@@ -223,10 +257,18 @@ class DevelopmentService:
             if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
                 return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
             rules, context = retrieve_service_context(store, Path(state["repository"]), state["specification"])
+        except UnsupportedInvocationRequirementError:
+            return {"status": "failed", **self._event(state, "required_invocation_unsupported")}
         except ValueError:
             return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
         finally:
             store.close()
+        if not state["specification"].operations and any(
+            requirement.supported
+            for dependency in context.dependencies
+            for requirement in dependency.required_invocations
+        ):
+            return {"status": "failed", **self._event(state, "required_invocation_operation_missing")}
         return {"framework_rules": rules, "coding_context": context, **self._event(state, "framework_retrieved")}
 
     @staticmethod

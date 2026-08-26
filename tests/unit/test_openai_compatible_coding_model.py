@@ -12,7 +12,7 @@ from agentic_platform.domain.models import (
     ImportSpec,
     UnresolvedDependencyCandidate,
 )
-from agentic_platform.models.prompt import build_coding_messages
+from agentic_platform.models.prompt import build_coding_messages, build_repair_messages
 from agentic_platform.models.factory import create_coding_model
 from agentic_platform.models.openai_compatible import (
     ModelHTTPError,
@@ -91,6 +91,39 @@ def test_prompt_includes_unresolved_dependencies_as_constraints() -> None:
 
     assert prompt["coding_context"]["unresolved_dependencies"][0]["attribute"] == "store"
     assert prompt["coding_context"]["unresolved_dependencies"][0]["reasons"] == ["observed in task-specific example"]
+
+
+def test_prompts_serialize_aliased_imports_for_generation_and_repair_without_provider_fields() -> None:
+    aliased_context = CodingContext(
+        service_base_class="FrameworkBase",
+        service_decorator="service_registration",
+        imports=(
+            ImportSpec("app.framework", "BaseService", "FrameworkBase"),
+            ImportSpec("app.framework", "register_service", "service_registration"),
+            ImportSpec("app.dependencies", "CustomerRepository", "CustomerRepo"),
+            ImportSpec("app.shared", "PlainImport"),
+        ),
+        dependencies=(DependencyContext("repository", "CustomerRepo", "app.dependencies", (), ()),),
+        examples=(),
+    )
+    previous = GeneratedChange((FileChange("app/account_service.py", "broken"),), "Initial account service")
+    failure = FailureContext("build", 1, ("pytest",), "NameError: FrameworkBase")
+
+    generation = json.loads(build_coding_messages(task(), aliased_context)[1]["content"])
+    repair = json.loads(build_repair_messages(task(), aliased_context, previous, failure)[1]["content"])
+
+    expected_imports = [
+        {"module": "app.framework", "symbol": "BaseService", "alias": "FrameworkBase"},
+        {"module": "app.framework", "symbol": "register_service", "alias": "service_registration"},
+        {"module": "app.dependencies", "symbol": "CustomerRepository", "alias": "CustomerRepo"},
+        {"module": "app.shared", "symbol": "PlainImport", "alias": None},
+    ]
+    for prompt in (generation, repair):
+        assert prompt["coding_context"]["imports"] == expected_imports
+        assert prompt["coding_context"]["dependencies"][0]["class_name"] == "CustomerRepo"
+        assert "api_key" not in prompt
+        assert "provider_secret" not in prompt
+        assert "test-key" not in json.dumps(prompt)
 
 
 def completion(content: str) -> TransportResponse:

@@ -12,6 +12,7 @@ from agentic_platform.domain.models import (
     DependencyContext,
     FrameworkRule,
     ImportSpec,
+    InvocationRequirement,
     SourceDependency,
     SourceIndex,
     SourceIndexEntry,
@@ -21,6 +22,12 @@ from agentic_platform.tasks.types import DevelopmentTask
 
 
 class AmbiguousFrameworkRuleError(ValueError):
+    pass
+
+
+class UnsupportedInvocationRequirementError(ValueError):
+    """Raised when active learned dependency behavior cannot be rendered safely."""
+
     pass
 
 
@@ -81,8 +88,8 @@ def retrieve_service_context(store, repository: Path, task: DevelopmentTask | No
     base = select_rule(rules, "service.base_class")
     decorator = select_rule(rules, "service.required_decorator")
     imports = [
-        ImportSpec(base.metadata["import_module"], base.expected_value),
-        ImportSpec(decorator.metadata["import_module"], decorator.expected_value),
+        ImportSpec(base.metadata["import_module"], base.metadata.get("import_symbol", base.expected_value), base.metadata.get("import_alias")),
+        ImportSpec(decorator.metadata["import_module"], decorator.metadata.get("import_symbol", decorator.expected_value), decorator.metadata.get("import_alias")),
     ]
     dependencies = []
     for rule in (item for item in rules if item.kind == "dependency.constructor"):
@@ -90,6 +97,17 @@ def retrieve_service_context(store, repository: Path, task: DevelopmentTask | No
         modules = rule.metadata["import_modules"]
         concrete = types[0] if len(types) == 1 else None
         module = modules[0] if len(modules) == 1 else None
+        import_metadata = rule.metadata.get("concrete_imports", {}).get(concrete, {}) if concrete else {}
+        required_invocations = tuple(
+            InvocationRequirement(
+                item["method_name"],
+                tuple(item["argument_shapes"]),
+                bool(item["supported"]),
+            )
+            for item in rule.metadata.get("required_invocations", [])
+        )
+        if concrete and any(not item.supported for item in required_invocations):
+            raise UnsupportedInvocationRequirementError(rule.expected_value)
         dependencies.append(
             DependencyContext(
                 rule.expected_value,
@@ -98,10 +116,17 @@ def retrieve_service_context(store, repository: Path, task: DevelopmentTask | No
                 tuple(rule.metadata["usage_methods"]),
                 tuple(rule.metadata["constructor_arguments"]),
                 rule.metadata.get("type_pattern"),
+                required_invocations=required_invocations if concrete else (),
             )
         )
         if concrete and module:
-            imports.append(ImportSpec(module, concrete))
+            imports.append(
+                ImportSpec(
+                    module,
+                    import_metadata.get("symbol", concrete),
+                    import_metadata.get("alias"),
+                )
+            )
 
     index = build_source_index(repository)
     examples = _rank_examples(index, task)

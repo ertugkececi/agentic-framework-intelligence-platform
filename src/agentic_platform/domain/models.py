@@ -47,6 +47,11 @@ class FrameworkRule:
 class ImportSpec:
     module: str
     symbol: str
+    alias: str | None = None
+
+    @property
+    def local_name(self) -> str:
+        return self.alias or self.symbol
 
 
 @dataclass(frozen=True)
@@ -94,6 +99,15 @@ class UnresolvedDependencyCandidate:
 
 
 @dataclass(frozen=True)
+class InvocationRequirement:
+    """A learned dependency call whose argument shapes are safe to render."""
+
+    method_name: str
+    argument_shapes: tuple[str, ...]
+    supported: bool
+
+
+@dataclass(frozen=True)
 class DependencyContext:
     attribute: str
     class_name: str | None
@@ -102,6 +116,7 @@ class DependencyContext:
     constructor_arguments: tuple[str, ...]
     type_pattern: str | None = None
     required: bool = True
+    required_invocations: tuple[InvocationRequirement, ...] = ()
 
 
 @dataclass(frozen=True)

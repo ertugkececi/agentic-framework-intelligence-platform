@@ -28,7 +28,7 @@ def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list
         "coding_context": {
             "service_base_class": context.service_base_class,
             "service_decorator": context.service_decorator,
-            "imports": [{"module": item.module, "symbol": item.symbol} for item in context.imports],
+            "imports": [{"module": item.module, "symbol": item.symbol, "alias": item.alias} for item in context.imports],
             "dependencies": [
                 {
                     "attribute": item.attribute,
@@ -38,6 +38,14 @@ def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list
                     "constructor_arguments": list(item.constructor_arguments),
                     "type_pattern": item.type_pattern,
                     "required": item.required,
+                    "required_invocations": [
+                        {
+                            "method_name": invocation.method_name,
+                            "argument_shapes": list(invocation.argument_shapes),
+                            "supported": invocation.supported,
+                        }
+                        for invocation in item.required_invocations
+                    ],
                 }
                 for item in context.dependencies
             ],

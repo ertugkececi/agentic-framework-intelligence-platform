@@ -21,7 +21,7 @@ from agentic_platform.tools.repository_tools import run_build, run_tests
 
 ROOT = Path(__file__).resolve().parents[2]
 SAMPLE = ROOT / "examples" / "sample_customer_repo"
-TASK = "Create SafeBoundaryService"
+TASK = "Create SafeBoundaryService with method run()"
 
 
 def _repository(tmp_path: Path) -> Path:

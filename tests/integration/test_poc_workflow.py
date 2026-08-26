@@ -52,7 +52,7 @@ def test_framework_b_and_mutation_remain_runtime_driven(tmp_path: Path):
     for path in (repository / "app").glob("*.py"):
         path.write_text(path.read_text().replace("FrameworkComponent", "DomainUnit"))
     run_framework_learning(tmp_path, repository)
-    mutated = run_development_task(tmp_path, repository, "Create DomainLookupService")
+    mutated = run_development_task(tmp_path, repository, "Create DomainLookupService with method run()")
     assert "class DomainLookupService(DomainUnit):" in (repository / "app/domain_lookup_service.py").read_text()
     assert mutated["status"] == "succeeded"
 
@@ -68,7 +68,7 @@ def test_development_task_reuses_explicitly_learned_knowledge(tmp_path: Path, mo
         "learn",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("development must not learn")),
     )
-    result = run_development_task(tmp_path, repository, "Create ReusedKnowledgeService")
+    result = run_development_task(tmp_path, repository, "Create ReusedKnowledgeService with method run()")
 
     assert result["framework_rules"]
     assert result["status"] == "succeeded"

@@ -167,7 +167,7 @@ def test_development_run_preserves_ambiguous_pattern_dependencies(tmp_path: Path
         build_runner=lambda repository, grant: passed,
         test_runner=lambda repository, grant: passed,
         validator=lambda path, rules: ValidationReport(True),
-    ).run(tmp_path, repository, "Create StorageService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create StorageService with method run()", grant=poc_grant(repository))
 
     storage = next(item for item in result["coding_context"].dependencies if item.attribute == "storage")
     assert storage.class_name is None

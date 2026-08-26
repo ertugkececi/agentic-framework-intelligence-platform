@@ -77,7 +77,7 @@ def test_development_service_retries_a_failed_build_with_bounded_failure_context
         test_runner=_passing_tests,
         validator=_passing_validation,
         max_failure_output=120,
-    ).run(tmp_path, repository, "Create RetrySuccessService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create RetrySuccessService with method run()", grant=poc_grant(repository))
 
     assert result["status"] == "succeeded"
     assert build_attempts == 2
@@ -103,7 +103,7 @@ def test_development_service_repairs_the_previous_change_with_failure_context(tm
         build_runner=build_then_passes,
         test_runner=_passing_tests,
         validator=_passing_validation,
-    ).run(tmp_path, repository, "Create RepairContractService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create RepairContractService with method run()", grant=poc_grant(repository))
 
     assert result["status"] == "succeeded"
     assert model.generate_calls == 1
@@ -131,7 +131,7 @@ def test_development_service_stops_after_default_retry_budget_is_exhausted(tmp_p
         build_runner=always_fails,
         test_runner=_passing_tests,
         validator=_passing_validation,
-    ).run(tmp_path, repository, "Create RetryExhaustedService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create RetryExhaustedService with method run()", grant=poc_grant(repository))
 
     assert result["status"] == "failed"
     assert result["retry_budget"] == 2
@@ -150,7 +150,7 @@ def test_development_service_records_generation_model_error_without_leaking_erro
 
     result = DevelopmentService(
         model_factory=lambda: FailingCodingModel(fail_on="generate", secret="model-api-secret"),
-    ).run(tmp_path, repository, "Create ModelFailureService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create ModelFailureService with method run()", grant=poc_grant(repository))
 
     assert result["status"] == "failed"
     assert result["retry_count"] == 0
@@ -165,7 +165,7 @@ def test_development_service_records_repair_model_error_without_consuming_budget
     result = DevelopmentService(
         model_factory=lambda: FailingCodingModel(fail_on="repair", secret="model-api-secret"),
         build_runner=lambda path, grant: CommandResult(False, ("build",), "syntax error"),
-    ).run(tmp_path, repository, "Create RepairModelFailureService", retry_budget=1, grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create RepairModelFailureService with method run()", retry_budget=1, grant=poc_grant(repository))
 
     assert result["status"] == "failed"
     assert result["retry_count"] == 0
@@ -196,7 +196,7 @@ def test_development_service_uses_one_model_instance_for_generation_and_repair(t
         build_runner=build_then_passes,
         test_runner=_passing_tests,
         validator=_passing_validation,
-    ).run(tmp_path, repository, "Create SharedModelService", grant=poc_grant(repository))
+    ).run(tmp_path, repository, "Create SharedModelService with method run()", grant=poc_grant(repository))
 
     assert result["status"] == "succeeded"
     assert len(models) == 1
