@@ -5,11 +5,22 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Protocol
 
-from agentic_platform.domain.models import CodingContext
+from agentic_platform.domain.models import ArtifactStructureContext, CodingContext
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange, ParameterSpec
 
 class CodingModelError(RuntimeError):
     """Provider-neutral boundary for failures while producing a coding change."""
+
+
+def validate_artifact_structure(task: DevelopmentTask, structure: ArtifactStructureContext) -> None:
+    """Fail closed when bounded structure is incomplete or for another family."""
+    if task.artifact_type != structure.artifact_family:
+        raise CodingModelError(
+            f"Task artifact family {task.artifact_type!r} does not match context "
+            f"artifact family {structure.artifact_family!r}"
+        )
+    if not structure.base_classes or not structure.decorators:
+        raise CodingModelError("Artifact structure requires base classes and decorators")
 
 
 @dataclass(frozen=True)
@@ -48,12 +59,15 @@ class DeterministicPythonCodingModel:
         task: DevelopmentTask,
         context: CodingContext,
     ) -> GeneratedChange:
-        import_lines = self._render_imports(context)
-        initializer = self._render_initializer(context)
-        method = self._render_operations(task, context)
+        structure = context.structure
+        validate_artifact_structure(task, structure)
+        import_lines = self._render_imports(structure)
+        initializer = self._render_initializer(structure)
+        method = self._render_operations(task, structure)
+        decorator_lines = "\n".join(f"@{item}" for item in structure.decorators)
         source = (
-            f"{import_lines}\n\n@{context.service_decorator}\n"
-            f"class {task.artifact_name}({context.service_base_class}):\n"
+            f"{import_lines}\n\n{decorator_lines}\n"
+            f"class {task.artifact_name}({', '.join(structure.base_classes)}):\n"
             f"{initializer}\n\n{method}"
         )
         filename = self._snake_case(task.artifact_name)
@@ -77,9 +91,9 @@ class DeterministicPythonCodingModel:
         """Deterministic fallback has no adaptive behavior, but honors the repair port."""
         return self.generate_change(task, context)
 
-    def _render_imports(self, context: CodingContext) -> str:
+    def _render_imports(self, structure: ArtifactStructureContext) -> str:
         grouped: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
-        for item in context.imports:
+        for item in structure.imports:
             grouped[item.module].append((item.symbol, item.alias))
         return "\n".join(
             f"from {module} import {', '.join(self._render_import(symbol, alias) for symbol, alias in sorted(set(symbols)))}"
@@ -90,8 +104,8 @@ class DeterministicPythonCodingModel:
     def _render_import(symbol: str, alias: str | None) -> str:
         return f"{symbol} as {alias}" if alias else symbol
 
-    def _render_initializer(self, context: CodingContext) -> str:
-        dependencies = [dependency for dependency in context.dependencies if dependency.class_name]
+    def _render_initializer(self, structure: ArtifactStructureContext) -> str:
+        dependencies = [dependency for dependency in structure.dependencies if dependency.class_name]
         if not dependencies:
             return "    def __init__(self) -> None:\n        pass"
         assignments = "\n".join(
@@ -101,23 +115,26 @@ class DeterministicPythonCodingModel:
         )
         return f"    def __init__(self) -> None:\n{assignments}"
 
-    def _render_operations(self, task: DevelopmentTask, context: CodingContext) -> str:
+    def _render_operations(self, task: DevelopmentTask, structure: ArtifactStructureContext) -> str:
         if not task.operations:
             return "    pass"
-        return "\n\n".join(self._render_operation(operation.name, operation.parameters, context) for operation in task.operations)
+        return "\n\n".join(
+            self._render_operation(operation.name, operation.parameters, structure)
+            for operation in task.operations
+        )
 
     def _render_operation(
         self,
         name: str,
         parameters: tuple[ParameterSpec, ...],
-        context: CodingContext,
+        structure: ArtifactStructureContext,
     ) -> str:
         parameter_names = ", ".join(parameter.name for parameter in parameters)
         suffix = f", {parameter_names}" if parameter_names else ""
         invocations = [
             f"        self.{dependency.attribute}.{requirement.method_name}"
             f"({', '.join(self._render_argument(shape, name) for shape in requirement.argument_shapes)})"
-            for dependency in context.dependencies
+            for dependency in structure.dependencies
             for requirement in dependency.required_invocations
         ]
         body = [*invocations, "        return None"]

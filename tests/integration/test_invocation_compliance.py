@@ -100,7 +100,8 @@ def test_unsupported_required_invocation_fails_before_customer_publish(tmp_path:
 
 def test_validator_reports_changed_required_invocation_argument_shape(tmp_path: Path) -> None:
     repository = _repository(tmp_path, "sample_customer_repo")
-    rules = FrameworkLearner().learn(repository)
+    result = FrameworkLearner().learn(repository)
+    rules = result.rules
     generated = repository / "app/generated_service.py"
     generated.write_text(
         "from app.framework import BaseService, CompanyLogger, business_service\n\n"
@@ -135,7 +136,8 @@ def test_sparse_invocation_evidence_does_not_become_a_required_call(tmp_path: Pa
         encoding="utf-8",
     )
 
-    rules = FrameworkLearner().learn(repository)
+    result = FrameworkLearner().learn(repository)
+    rules = result.rules
     logger_rule = next(rule for rule in rules if rule.kind == "dependency.constructor" and rule.expected_value == "logger")
 
     assert logger_rule.status.value == "active"
@@ -145,7 +147,8 @@ def test_sparse_invocation_evidence_does_not_become_a_required_call(tmp_path: Pa
 def test_repeated_invocation_evidence_becomes_a_required_call(tmp_path: Path) -> None:
     repository = _repository(tmp_path, "sample_customer_repo")
 
-    rules = FrameworkLearner().learn(repository)
+    result = FrameworkLearner().learn(repository)
+    rules = result.rules
     logger_rule = next(rule for rule in rules if rule.kind == "dependency.constructor" and rule.expected_value == "logger")
 
     requirement = logger_rule.metadata["required_invocations"]

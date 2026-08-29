@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from agentic_platform.domain.models import (
+    ArtifactStructureContext,
     CodeExample,
     CodingContext,
     DependencyContext,
@@ -56,6 +57,34 @@ def select_rule(rules: list[FrameworkRule], kind: str) -> FrameworkRule:
     return ranked[0]
 
 
+def retrieve_artifact_structure(
+    rules: list[FrameworkRule],
+    artifact_family: str,
+) -> ArtifactStructureContext:
+    """Select required structural rules for an explicit artifact family."""
+    base = select_rule(rules, f"{artifact_family}.base_class")
+    decorator = select_rule(rules, f"{artifact_family}.required_decorator")
+    imports = (
+        ImportSpec(
+            base.metadata["import_module"],
+            base.metadata.get("import_symbol", base.expected_value),
+            base.metadata.get("import_alias"),
+        ),
+        ImportSpec(
+            decorator.metadata["import_module"],
+            decorator.metadata.get("import_symbol", decorator.expected_value),
+            decorator.metadata.get("import_alias"),
+        ),
+    )
+    return ArtifactStructureContext(
+        artifact_family=artifact_family,
+        base_classes=(base.expected_value,),
+        decorators=(decorator.expected_value,),
+        imports=imports,
+        dependencies=(),
+    )
+
+
 def build_source_index(repository: Path) -> SourceIndex:
     """Create a stable structural source index for framework-shaped classes."""
     entries: list[SourceIndexEntry] = []
@@ -83,14 +112,31 @@ def build_source_index(repository: Path) -> SourceIndex:
     return SourceIndex(tuple(entries))
 
 
+def retrieve_controller_context(store, repository: Path, task: DevelopmentTask | None = None):
+    """Retrieve controller coding context mirroring the service path."""
+    rules = store.active_rules_for("controller")
+    structure = retrieve_artifact_structure(rules, "controller")
+    imports = list(structure.imports)
+
+    index = build_source_index(repository)
+    examples = _rank_examples(index, task)
+    return rules, CodingContext(
+        structure=ArtifactStructureContext(
+            artifact_family=structure.artifact_family,
+            base_classes=structure.base_classes,
+            decorators=structure.decorators,
+            imports=tuple(imports),
+            dependencies=(),
+        ),
+        examples=examples,
+        unresolved_dependencies=(),
+    )
+
+
 def retrieve_service_context(store, repository: Path, task: DevelopmentTask | None = None):
     rules = store.active_rules_for("service") + store.active_rules_for("dependency")
-    base = select_rule(rules, "service.base_class")
-    decorator = select_rule(rules, "service.required_decorator")
-    imports = [
-        ImportSpec(base.metadata["import_module"], base.metadata.get("import_symbol", base.expected_value), base.metadata.get("import_alias")),
-        ImportSpec(decorator.metadata["import_module"], decorator.metadata.get("import_symbol", decorator.expected_value), decorator.metadata.get("import_alias")),
-    ]
+    structure = retrieve_artifact_structure(rules, "service")
+    imports = list(structure.imports)
     dependencies = []
     for rule in (item for item in rules if item.kind == "dependency.constructor"):
         types = rule.metadata["concrete_types"]
@@ -138,12 +184,15 @@ def retrieve_service_context(store, repository: Path, task: DevelopmentTask | No
     }
     unresolved = _unresolved_candidates(index, task, resolved_attributes, type_patterns)
     return rules, CodingContext(
-        base.expected_value,
-        decorator.expected_value,
-        tuple(imports),
-        tuple(dependencies),
-        examples,
-        unresolved,
+        structure=ArtifactStructureContext(
+            artifact_family=structure.artifact_family,
+            base_classes=structure.base_classes,
+            decorators=structure.decorators,
+            imports=tuple(imports),
+            dependencies=tuple(dependencies),
+        ),
+        examples=examples,
+        unresolved_dependencies=unresolved,
     )
 
 
@@ -156,7 +205,7 @@ def _rank_examples(index: SourceIndex, task: DevelopmentTask | None) -> tuple[Co
     ranked.sort(key=lambda item: (-item[0], item[2].source_path, item[2].symbol))
     return tuple(
         CodeExample(entry.source_path, entry.symbol, entry.snippet, score, reasons)
-        for score, reasons, entry in ranked[:3]
+        for score, reasons, entry in ranked[:6]
     )
 
 

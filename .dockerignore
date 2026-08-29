@@ -1,0 +1,8 @@
+.git
+.venv
+.poc-run
+.poc-docker
+__pycache__
+*.pyc
+.pytest_cache
+framework_knowledge.sqlite

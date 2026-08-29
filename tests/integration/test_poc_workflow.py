@@ -23,7 +23,8 @@ def test_framework_a_regression_generates_from_learned_dependency_context(tmp_pa
 def test_multiple_constructor_dependencies_are_generic_structured_rules(tmp_path: Path):
     result = run_poc(tmp_path, "sample_customer_repo_b", "Create CustomerAccountService with method get_account(account_id)")
     root = Path(__file__).resolve().parents[2]
-    rules = rules_by_kind(FrameworkLearner().learn(root / "examples/sample_customer_repo_b"))["dependency.constructor"]
+    result = FrameworkLearner().learn(root / "examples/sample_customer_repo_b")
+    rules = rules_by_kind(result.rules)["dependency.constructor"]
     assert {rule.expected_value for rule in rules} == {"log", "repository", "mapper", "payment_client", "notification_client"}
     assert all(not rule.kind.startswith("logging.") for rule in rules)
     log = next(rule for rule in rules if rule.expected_value == "log")

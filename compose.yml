@@ -1,0 +1,15 @@
+services:
+  agentic-platform:
+    build:
+      context: .
+    image: agentic-framework-intelligence-platform:local
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    ports:
+      - "127.0.0.1:8000:8000"
+
+    volumes:
+      - ./.poc-docker:/workspace

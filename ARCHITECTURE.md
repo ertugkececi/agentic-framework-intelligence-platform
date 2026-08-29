@@ -240,17 +240,21 @@ The PoC proves the rule-to-code boundary with a typed `CodingContext`, assembled
 
 ```python
 @dataclass(frozen=True)
-class CodingContext:
-    service_base_class: str
-    service_decorator: str
+class ArtifactStructureContext:
+    artifact_family: str
+    base_classes: tuple[str, ...]
+    decorators: tuple[str, ...]
     imports: tuple[ImportSpec, ...]
-    logger_class: str
-    logger_attribute: str
-    logger_method: str
+    dependencies: tuple[DependencyContext, ...]
+
+@dataclass(frozen=True)
+class CodingContext:
+    structure: ArtifactStructureContext
     examples: tuple[CodeExample, ...]
+    unresolved_dependencies: tuple[UnresolvedDependencyCandidate, ...]
 ```
 
-Generic Python AST discovery emits `service.base_class`, `service.required_decorator`, `logging.logger_class`, `logging.logger_attribute`, and `logging.required_method`. The first three include `metadata.import_module` learned from source imports. The deterministic PoC generator receives only this context; customer symbols do not occur anywhere in `src/agentic_platform`. A second repository with different symbols and a base-class rename mutation are integration-tested against the unchanged product source.
+Generic Python AST discovery emits family-scoped structure rules and dependency rules. Retrieval selects required rules for an explicit artifact family and assembles the immutable generic structure; missing or equally ranked required rules fail closed. Prompt and deterministic generation consume `CodingContext.structure`. The current positional and keyword service `CodingContext` constructor and its `service_base_class` / `service_decorator` properties remain compatibility projections. Customer symbols do not occur anywhere in `src/agentic_platform`, and service workflow behavior remains unchanged.
 
 ### Example rule payload
 

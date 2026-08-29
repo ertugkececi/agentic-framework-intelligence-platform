@@ -8,39 +8,51 @@ from typing import Iterable
 from agentic_platform.domain.models import FrameworkRule, ImportSpec, ValidationFinding, ValidationReport
 
 
-def validate_service(source_path: Path, rules: list[FrameworkRule]) -> ValidationReport:
-    """Validate generated source against active learned structure and dependency rules."""
+def validate_artifact(source_path: Path, rules: list[FrameworkRule], artifact_family: str) -> ValidationReport:
+    """Validate generated source against active learned structure rules for an artifact family."""
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
-    service = next(
-        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name.endswith("Service")),
+    artifact_class = next(
+        (node for node in tree.body if isinstance(node, ast.ClassDef) and node.name.endswith(
+            "Service" if artifact_family == "service" else "Controller"
+        )),
         None,
     )
-    if service is None:
-        return ValidationReport(False, (ValidationFinding("service.class", "Service class missing"),))
+    if artifact_class is None:
+        return ValidationReport(False, (ValidationFinding(
+            f"{artifact_family}.class",
+            f"{artifact_family.title()} class missing",
+        ),))
 
     findings: list[ValidationFinding] = []
     imports = _imports(tree)
-    _validate_service_structure(service, imports, rules, findings)
-    _validate_resolved_dependencies(service, imports, rules, findings)
+    _validate_structure(artifact_class, imports, rules, artifact_family, findings)
+    if artifact_family == "service":
+        _validate_resolved_dependencies(artifact_class, imports, rules, findings)
     return ValidationReport(not findings, tuple(findings))
 
 
-def _validate_service_structure(
-    service: ast.ClassDef,
+def validate_service(source_path: Path, rules: list[FrameworkRule]) -> ValidationReport:
+    """Backward-compatible service validator."""
+    return validate_artifact(source_path, rules, "service")
+
+
+def _validate_structure(
+    artifact_class: ast.ClassDef,
     imports: dict[str, ImportSpec],
     rules: Iterable[FrameworkRule],
+    artifact_family: str,
     findings: list[ValidationFinding],
 ) -> None:
     for kind, nodes in (
-        ("service.base_class", service.bases),
-        ("service.required_decorator", service.decorator_list),
+        (f"{artifact_family}.base_class", artifact_class.bases),
+        (f"{artifact_family}.required_decorator", artifact_class.decorator_list),
     ):
         rule = next((item for item in rules if item.kind == kind), None)
         if rule is None:
             continue
         observed = {_name(node) for node in nodes}
         if rule.expected_value not in observed:
-            findings.append(ValidationFinding(kind, "Required service structure missing"))
+            findings.append(ValidationFinding(kind, f"Required {artifact_family} structure missing"))
             continue
         if not _matches_import_provenance(imports, rule.expected_value, rule.metadata):
             findings.append(

@@ -120,13 +120,66 @@ class DependencyContext:
 
 
 @dataclass(frozen=True)
-class CodingContext:
-    service_base_class: str
-    service_decorator: str
+class ArtifactStructureContext:
+    """Language-neutral structure and dependencies for one artifact family."""
+
+    artifact_family: str
+    base_classes: tuple[str, ...]
+    decorators: tuple[str, ...]
     imports: tuple[ImportSpec, ...]
     dependencies: tuple[DependencyContext, ...]
+
+
+@dataclass(frozen=True, init=False)
+class CodingContext:
+    """Bounded coding context with a legacy service construction projection."""
+
+    structure: ArtifactStructureContext
     examples: tuple[CodeExample, ...]
-    unresolved_dependencies: tuple[UnresolvedDependencyCandidate, ...] = ()
+    unresolved_dependencies: tuple[UnresolvedDependencyCandidate, ...]
+
+    def __init__(
+        self,
+        service_base_class: str | None = None,
+        service_decorator: str | None = None,
+        imports: tuple[ImportSpec, ...] = (),
+        dependencies: tuple[DependencyContext, ...] = (),
+        examples: tuple[CodeExample, ...] = (),
+        unresolved_dependencies: tuple[UnresolvedDependencyCandidate, ...] = (),
+        *,
+        structure: ArtifactStructureContext | None = None,
+    ) -> None:
+        if structure is None:
+            if service_base_class is None or service_decorator is None:
+                raise TypeError("service_base_class and service_decorator are required")
+            structure = ArtifactStructureContext(
+                artifact_family="service",
+                base_classes=(service_base_class,),
+                decorators=(service_decorator,),
+                imports=imports,
+                dependencies=dependencies,
+            )
+        elif service_base_class is not None or service_decorator is not None or imports or dependencies:
+            raise TypeError("structure cannot be combined with legacy service structure arguments")
+        object.__setattr__(self, "structure", structure)
+        object.__setattr__(self, "examples", examples)
+        object.__setattr__(self, "unresolved_dependencies", unresolved_dependencies)
+
+    @property
+    def service_base_class(self) -> str:
+        return self.structure.base_classes[0]
+
+    @property
+    def service_decorator(self) -> str:
+        return self.structure.decorators[0]
+
+    @property
+    def imports(self) -> tuple[ImportSpec, ...]:
+        return self.structure.imports
+
+    @property
+    def dependencies(self) -> tuple[DependencyContext, ...]:
+        return self.structure.dependencies
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ htmlcov/
 .venv/
 venv/
 .poc-run/
+.poc-docker/
 *.sqlite
 
 # Hermes local review state
@@ -22,3 +23,4 @@ venv/
 .vscode/
 .DS_Store
 Thumbs.db
+.env

@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 
 from agentic_platform.domain.models import CodingContext
-from agentic_platform.models.gateway import FailureContext
+from agentic_platform.models.gateway import FailureContext, validate_artifact_structure
 from agentic_platform.tasks.types import DevelopmentTask, GeneratedChange
 
 _SYSTEM_PROMPT = """You generate repository changes from a bounded coding context.
@@ -16,6 +16,7 @@ Do not assume dependencies or conventions not present in the supplied context.""
 
 def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list[dict[str, str]]:
     """Build provider-independent Chat Completions messages from typed inputs."""
+    validate_artifact_structure(task, context.structure)
     request_context = {
         "task": {
             "artifact_type": task.artifact_type,
@@ -26,9 +27,18 @@ def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list
             ],
         },
         "coding_context": {
-            "service_base_class": context.service_base_class,
-            "service_decorator": context.service_decorator,
-            "imports": [{"module": item.module, "symbol": item.symbol, "alias": item.alias} for item in context.imports],
+            "artifact_structure": {
+                "artifact_family": context.structure.artifact_family,
+                "base_classes": list(context.structure.base_classes),
+                "decorators": list(context.structure.decorators),
+            },
+            # Compatibility projection for current service prompt consumers.
+            "service_base_class": context.structure.base_classes[0],
+            "service_decorator": context.structure.decorators[0],
+            "imports": [
+                {"module": item.module, "symbol": item.symbol, "alias": item.alias}
+                for item in context.structure.imports
+            ],
             "dependencies": [
                 {
                     "attribute": item.attribute,
@@ -47,7 +57,7 @@ def build_coding_messages(task: DevelopmentTask, context: CodingContext) -> list
                         for invocation in item.required_invocations
                     ],
                 }
-                for item in context.dependencies
+                for item in context.structure.dependencies
             ],
             "examples": [
                 {

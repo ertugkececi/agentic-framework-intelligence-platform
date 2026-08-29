@@ -14,7 +14,12 @@ from agentic_platform.domain.models import CodingContext, CommandResult, Framewo
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
-from agentic_platform.retrieval.context import UnsupportedInvocationRequirementError, retrieve_service_context
+from agentic_platform.retrieval.context import (
+    UnsupportedInvocationRequirementError,
+    retrieve_artifact_structure,
+    retrieve_controller_context,
+    retrieve_service_context,
+)
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -84,13 +89,13 @@ class FrameworkLearningService:
 
     def learn(self, workspace: Path, repository: Path) -> list[FrameworkRule]:
         workspace.mkdir(parents=True, exist_ok=True)
-        rules = self._learner.learn(repository)
+        result = self._learner.learn(repository)
         store = SQLiteKnowledgeStore(self.database_path(workspace))
         try:
-            store.replace_rules(rules, repository_fingerprint(repository))
+            store.replace_rules(result.rules, repository_fingerprint(repository))
         finally:
             store.close()
-        return rules
+        return result.rules
 
 
 class DevelopmentService:
@@ -197,7 +202,10 @@ class DevelopmentService:
         try:
             if store.repository_fingerprint() != repository_fingerprint(repository):
                 return False
-            _, context = retrieve_service_context(store, repository, specification)
+            if specification.artifact_type == "controller":
+                _, context = retrieve_controller_context(store, repository, specification)
+            else:
+                _, context = retrieve_service_context(store, repository, specification)
         except (UnsupportedInvocationRequirementError, ValueError):
             return False
         finally:
@@ -256,7 +264,14 @@ class DevelopmentService:
         try:
             if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
                 return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
-            rules, context = retrieve_service_context(store, Path(state["repository"]), state["specification"])
+            if state["specification"].artifact_type == "controller":
+                rules, context = retrieve_controller_context(
+                    store, Path(state["repository"]), state["specification"]
+                )
+            else:
+                rules, context = retrieve_service_context(
+                    store, Path(state["repository"]), state["specification"]
+                )
         except UnsupportedInvocationRequirementError:
             return {"status": "failed", **self._event(state, "required_invocation_unsupported")}
         except ValueError:

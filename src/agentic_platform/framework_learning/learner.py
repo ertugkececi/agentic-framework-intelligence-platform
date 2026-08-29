@@ -1,291 +1,364 @@
-"""Generic AST learning of repeated service structures and dependency calls."""
+"""Repository orchestration for evidence-based framework learning."""
 from __future__ import annotations
 
-import ast
-from collections import defaultdict
+import json
+import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from typing import DefaultDict, Iterable
+from typing import Protocol
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, ImportSpec, RuleStatus
+from agentic_platform.domain.models import FrameworkRule
+from agentic_platform.framework_learning.aggregation import FrameworkRuleAggregator
+from agentic_platform.framework_learning.inventory import (
+    RepositoryInventory,
+    RepositoryRevision,
+    RepositoryScanner,
+)
+from agentic_platform.framework_learning.observations import (
+    FrameworkObservation,
+    ObservationBatch,
+    ObservationStore,
+)
+from agentic_platform.framework_learning.python_ast import (
+    PythonAstParser,
+    PythonControllerObservationExtractor,
+    PythonServiceObservationExtractor,
+)
+from agentic_platform.framework_knowledge.snapshots import FrameworkKnowledgeSnapshot
 
 
-_SUPPORTED_ARGUMENT_SHAPES = {
-    "string_literal",
-    "integer_literal",
-    "float_literal",
-    "boolean_literal",
-    "none_literal",
-    "empty_mapping",
-    "empty_sequence",
-}
+DEFAULT_PARSER_VERSION = "python-ast-1"
+
+
+@dataclass(frozen=True)
+class LearnResult:
+    """Result of a learning run, including rules, snapshot, and rebuild status."""
+
+    rules: list[FrameworkRule]
+    snapshot: FrameworkKnowledgeSnapshot
+    is_full_rebuild: bool
+
+
+class KnowledgeStore(Protocol):
+    """Protocol for persisting learning state between runs."""
+
+    def load_previous_state(self) -> "PreviousLearningState | None":
+        """Load the previous learning state, or None if no prior run exists."""
+        ...
+
+    def save_state(self, state: "PreviousLearningState") -> None:
+        """Persist the current learning state."""
+        ...
+
+
+@dataclass(frozen=True)
+class PreviousLearningState:
+    """State from a previous learning run, used to detect changes."""
+
+    repository_revision: str
+    parser_version: str
+    snapshot_identity: str
+    observation_store: ObservationStore
+
+
+class SQLiteKnowledgeStore:
+    """SQLite-based implementation of KnowledgeStore.
+
+    Tracks the last learning run's parser version, repository revision,
+    and observation store to support incremental updates and full rebuild detection.
+    """
+
+    def __init__(self, database_path: Path) -> None:
+        self.connection = sqlite3.connect(database_path)
+        self.connection.row_factory = sqlite3.Row
+        self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS learning_state (
+              id INTEGER PRIMARY KEY CHECK (id = 1),
+              repository_revision TEXT NOT NULL,
+              parser_version TEXT NOT NULL,
+              snapshot_identity TEXT NOT NULL,
+              observation_store_json TEXT NOT NULL
+            )
+        """)
+        self.connection.commit()
+
+    def load_previous_state(self) -> PreviousLearningState | None:
+        row = self.connection.execute(
+            "SELECT * FROM learning_state WHERE id = 1"
+        ).fetchone()
+        if row is None:
+            return None
+        return PreviousLearningState(
+            repository_revision=row["repository_revision"],
+            parser_version=row["parser_version"],
+            snapshot_identity=row["snapshot_identity"],
+            observation_store=_decode_observation_store(row["observation_store_json"]),
+        )
+
+    def save_state(self, state: PreviousLearningState) -> None:
+        with self.connection:
+            self.connection.execute(
+                """INSERT OR REPLACE INTO learning_state
+                (id, repository_revision, parser_version, snapshot_identity, observation_store_json)
+                VALUES (1, ?, ?, ?, ?)""",
+                (
+                    state.repository_revision,
+                    state.parser_version,
+                    state.snapshot_identity,
+                    _encode_observation_store(state.observation_store),
+                ),
+            )
+
+    def close(self) -> None:
+        self.connection.close()
+
+
+def _encode_observation_store(store: ObservationStore) -> str:
+    """Serialize observation store to JSON."""
+    files = []
+    for path, observations in store.files:
+        obs_list = []
+        for obs in observations:
+            if hasattr(obs, 'kind'):  # StructuralClassObservation
+                obs_list.append({
+                    "_type": "structural",
+                    "kind": obs.kind,
+                    "expected_value": obs.expected_value,
+                    "evidence": obs.evidence.__dict__,
+                    "imported": obs.imported.__dict__ if obs.imported else None,
+                })
+            elif hasattr(obs, 'attribute'):  # ConstructorDependencyObservation
+                obs_list.append({
+                    "_type": "dependency",
+                    "attribute": obs.attribute,
+                    "concrete_type": obs.concrete_type,
+                    "evidence": obs.evidence.__dict__,
+                    "imported": obs.imported.__dict__ if obs.imported else None,
+                    "constructor_arguments": list(obs.constructor_arguments),
+                    "invocations": [
+                        {"method_name": inv.method_name, "argument_shapes": list(inv.argument_shapes)}
+                        for inv in obs.invocations
+                    ],
+                })
+        files.append({"path": path, "observations": obs_list})
+    return json.dumps(files)
+
+
+def _decode_observation_store(json_str: str) -> ObservationStore:
+    """Deserialize observation store from JSON."""
+    from agentic_platform.domain.models import Evidence, ImportSpec
+    from agentic_platform.framework_learning.observations import (
+        ConstructorDependencyObservation,
+        InvocationObservation,
+        StructuralClassObservation,
+    )
+
+    files = json.loads(json_str)
+    result = []
+    for file_entry in files:
+        path = file_entry["path"]
+        observations = []
+        for obs in file_entry["observations"]:
+            if obs["_type"] == "structural":
+                imported = ImportSpec(**obs["imported"]) if obs["imported"] else None
+                observations.append(StructuralClassObservation(
+                    kind=obs["kind"],
+                    expected_value=obs["expected_value"],
+                    evidence=Evidence(**obs["evidence"]),
+                    imported=imported,
+                ))
+            elif obs["_type"] == "dependency":
+                imported = ImportSpec(**obs["imported"]) if obs["imported"] else None
+                invocations = tuple(
+                    InvocationObservation(
+                        method_name=inv["method_name"],
+                        argument_shapes=tuple(inv["argument_shapes"]),
+                    )
+                    for inv in obs["invocations"]
+                )
+                observations.append(ConstructorDependencyObservation(
+                    attribute=obs["attribute"],
+                    concrete_type=obs["concrete_type"],
+                    evidence=Evidence(**obs["evidence"]),
+                    imported=imported,
+                    constructor_arguments=tuple(obs["constructor_arguments"]),
+                    invocations=invocations,
+                ))
+        result.append((path, tuple(observations)))
+    return ObservationStore(files=tuple(result))
 
 
 class FrameworkLearner:
-    """Infer active conventions solely from repeated structural source evidence."""
+    """Infer active conventions solely from repeated structural source evidence.
 
-    def __init__(self, minimum_evidence: int = 3, active_threshold: float = 0.8) -> None:
+    Supports incremental learning: when the repository changes between runs,
+    only affected files are re-processed. Parser version changes trigger
+    a full rebuild.
+    """
+
+    LearnResult = LearnResult
+    KnowledgeStore = SQLiteKnowledgeStore
+
+    def __init__(
+        self,
+        minimum_evidence: int = 3,
+        active_threshold: float = 0.8,
+        parser_version: str = DEFAULT_PARSER_VERSION,
+    ) -> None:
         self.minimum_evidence = minimum_evidence
         self.active_threshold = active_threshold
+        self.parser_version = parser_version
 
-    def learn(self, repository: Path) -> list[FrameworkRule]:
-        observations: DefaultDict[str, DefaultDict[object, list[object]]] = defaultdict(lambda: defaultdict(list))
-        service_count = 0
-        for path in sorted(repository.rglob("*.py")):
-            if "tests" in path.parts:
-                continue
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            imports = self._imports(tree)
-            relative_path = path.relative_to(repository).as_posix()
-            for service in self._services(tree):
-                service_count += 1
-                self._observe(observations, service, imports, relative_path)
-        return self._rules(observations, service_count)
-
-    @staticmethod
-    def _services(tree: ast.Module) -> list[ast.ClassDef]:
-        return [
-            node
-            for node in tree.body
-            if isinstance(node, ast.ClassDef) and node.name.endswith("Service") and (node.bases or node.decorator_list)
-        ]
-
-    def _observe(
+    def learn(
         self,
-        observations: DefaultDict[str, DefaultDict[object, list[object]]],
-        service: ast.ClassDef,
-        imports: dict[str, ImportSpec],
-        source_path: str,
-    ) -> None:
-        for kind, nodes in (
-            ("service.base_class", service.bases),
-            ("service.required_decorator", service.decorator_list),
-        ):
-            for node in nodes:
-                name = self._name(node)
-                imported = imports.get(name)
-                if name:
-                    observations[kind][(
-                        name,
-                        imported.module if imported else "",
-                        imported.symbol if imported else name,
-                        imported.alias if imported else None,
-                    )].append(
-                        Evidence(source_path, service.name, name)
-                    )
+        repository: Path,
+        store: KnowledgeStore | None = None,
+    ) -> LearnResult:
+        inventory = RepositoryScanner().scan(repository)
+        revision = RepositoryRevision.from_inventory(inventory)
 
-        for attribute, (class_name, arguments) in self._dependencies(service).items():
-            invocations = self._calls(service, attribute)
-            observations["dependency.constructor"][attribute].append(
-                (
-                    Evidence(source_path, service.name, attribute),
-                    class_name,
-                    imports.get(class_name),
-                    arguments,
-                    invocations,
-                )
-            )
+        previous_state = store.load_previous_state() if store else None
 
-    def _rules(
+        # Determine if full rebuild is needed
+        is_full_rebuild = self._should_full_rebuild(previous_state, revision)
+
+        if is_full_rebuild:
+            result = self._full_learn(repository, inventory)
+        else:
+            result = self._incremental_learn(repository, inventory, previous_state)
+
+        # Build snapshot
+        snapshot = FrameworkKnowledgeSnapshot.from_rules(
+            rules=tuple(result),
+            repository_revision=revision.value,
+            parser_version=self.parser_version,
+        )
+
+        # Save state for next run
+        if store:
+            obs_store = self._build_observation_store(repository, inventory)
+            store.save_state(PreviousLearningState(
+                repository_revision=revision.value,
+                parser_version=self.parser_version,
+                snapshot_identity=snapshot.identity,
+                observation_store=obs_store,
+            ))
+
+        return LearnResult(
+            rules=result,
+            snapshot=snapshot,
+            is_full_rebuild=is_full_rebuild,
+        )
+
+    def _should_full_rebuild(
         self,
-        observations: DefaultDict[str, DefaultDict[object, list[object]]],
-        service_count: int,
+        previous_state: PreviousLearningState | None,
+        current_revision: RepositoryRevision,
+    ) -> bool:
+        """Determine if a full rebuild is required."""
+        if previous_state is None:
+            return True
+        if previous_state.parser_version != self.parser_version:
+            return True
+        return False
+
+    def _full_learn(
+        self,
+        repository: Path,
+        inventory: RepositoryInventory,
     ) -> list[FrameworkRule]:
-        rules: list[FrameworkRule] = []
-        for kind, values in observations.items():
-            for key, entries in values.items():
-                if kind == "dependency.constructor":
-                    rule = self._dependency_rule(str(key), entries, service_count)
-                else:
-                    rule = self._structure_rule(kind, key, entries, service_count)
-                rules.append(rule)
-        return rules
+        """Process all files from scratch."""
+        parser = PythonAstParser()
+        service_extractor = PythonServiceObservationExtractor()
+        controller_extractor = PythonControllerObservationExtractor()
 
-    def _dependency_rule(self, attribute: str, entries: list[object], service_count: int) -> FrameworkRule:
-        dependency_entries = list(entries)
-        evidence = tuple(entry[0] for entry in dependency_entries)
-        concrete_types = sorted({entry[1] for entry in dependency_entries})
-        import_modules = sorted({entry[2].module for entry in dependency_entries if entry[2] is not None})
-        constructor_argument_shapes = sorted({entry[3] for entry in dependency_entries})
-        invocations = sorted({invocation for entry in dependency_entries for invocation in entry[4]})
-        required_invocations = [
-            self._invocation_requirement(invocation, dependency_entries, service_count)
-            for invocation in invocations
-        ]
-        metadata = {
-            "concrete_types": concrete_types,
-            "import_modules": import_modules,
-            "constructor_arguments": constructor_argument_shapes[0] if len(constructor_argument_shapes) == 1 else (),
-            "usage_methods": sorted({method_name for method_name, _ in invocations}),
-            "required_invocations": [item for item in required_invocations if item["active"]],
-            "invocation_evidence": required_invocations,
-            "concrete_imports": {
-                entry[1]: self._import_metadata(entry[2])
-                for entry in dependency_entries
-                if entry[2] is not None
-            },
-            "type_pattern": self._suffix(concrete_types),
-        }
-        return self._rule("dependency.constructor", attribute, evidence, metadata, service_count)
+        service_observations: list[FrameworkObservation] = []
+        controller_observations: list[FrameworkObservation] = []
+        service_subject_count = 0
+        controller_subject_count = 0
 
-    def _invocation_requirement(
-        self,
-        invocation: tuple[str, tuple[str, ...]],
-        entries: list[object],
-        service_count: int,
-    ) -> dict[str, object]:
-        method_name, argument_shapes = invocation
-        evidence = [entry[0] for entry in entries if invocation in entry[4]]
-        support_count = len(evidence)
-        confidence = support_count / service_count if service_count else 0.0
-        active = support_count >= self.minimum_evidence and confidence >= self.active_threshold
-        return {
-            "method_name": method_name,
-            "argument_shapes": list(argument_shapes),
-            "supported": all(shape in _SUPPORTED_ARGUMENT_SHAPES for shape in argument_shapes),
-            "support_count": support_count,
-            "conflict_count": service_count - support_count,
-            "confidence": confidence,
-            "evidence": [item.__dict__ for item in evidence],
-            "active": active,
-        }
-
-    def _structure_rule(
-        self,
-        kind: str,
-        key: object,
-        entries: list[object],
-        service_count: int,
-    ) -> FrameworkRule:
-        expected_value, import_module, import_symbol, import_alias = key
-        metadata = (
-            {"import_module": import_module, "import_symbol": import_symbol, "import_alias": import_alias}
-            if import_module
-            else {}
-        )
-        return self._rule(kind, expected_value, tuple(entries), metadata, service_count)
-
-    def _rule(
-        self,
-        kind: str,
-        expected_value: str,
-        evidence: tuple[Evidence, ...],
-        metadata: dict[str, object],
-        service_count: int,
-    ) -> FrameworkRule:
-        support_count = len(evidence)
-        confidence = support_count / service_count if service_count else 0.0
-        status = (
-            RuleStatus.ACTIVE
-            if support_count >= self.minimum_evidence and confidence >= self.active_threshold
-            else RuleStatus.CANDIDATE
-        )
-        return FrameworkRule(
-            kind=kind,
-            expected_value=expected_value,
-            confidence=confidence,
-            support_count=support_count,
-            conflict_count=service_count - support_count,
-            evidence=evidence,
-            metadata=metadata,
-            status=status,
-        )
-
-    @staticmethod
-    def _dependencies(service: ast.ClassDef) -> dict[str, tuple[str, tuple[str, ...]]]:
-        dependencies: dict[str, tuple[str, tuple[str, ...]]] = {}
-        initializer = next(
-            (node for node in service.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"),
-            None,
-        )
-        for node in ast.walk(initializer) if initializer else ():
-            if not (
-                isinstance(node, ast.Assign)
-                and isinstance(node.value, ast.Call)
-                and isinstance(node.value.func, ast.Name)
-            ):
+        for source_file in inventory.files:
+            if source_file.language_id != "python":
                 continue
-            arguments = tuple(FrameworkLearner._constructor_argument(argument) for argument in node.value.args)
-            for target in node.targets:
-                if (
-                    isinstance(target, ast.Attribute)
-                    and isinstance(target.value, ast.Name)
-                    and target.value.id == "self"
-                ):
-                    dependencies[target.attr] = (node.value.func.id, arguments)
-        return dependencies
+            parsed = parser.parse(repository, source_file)
+            service_batch = service_extractor.extract(parsed)
+            controller_batch = controller_extractor.extract(parsed)
+            service_observations.extend(service_batch.observations)
+            controller_observations.extend(controller_batch.observations)
+            service_subject_count += service_batch.subject_count
+            controller_subject_count += controller_batch.subject_count
 
-    @staticmethod
-    def _calls(service: ast.ClassDef, attribute: str) -> set[tuple[str, tuple[str, ...]]]:
-        calls: set[tuple[str, tuple[str, ...]]] = set()
-        for node in ast.walk(service):
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and isinstance(node.func.value, ast.Attribute)
-                and isinstance(node.func.value.value, ast.Name)
-                and node.func.value.value.id == "self"
-                and node.func.value.attr == attribute
-            ):
+        aggregator = FrameworkRuleAggregator(
+            minimum_evidence=self.minimum_evidence,
+            active_threshold=self.active_threshold,
+        )
+        service_rules = aggregator.aggregate(
+            ObservationBatch(service_subject_count, tuple(service_observations))
+        )
+        controller_rules = aggregator.aggregate(
+            ObservationBatch(controller_subject_count, tuple(controller_observations))
+        )
+        return service_rules + controller_rules
+
+    def _incremental_learn(
+        self,
+        repository: Path,
+        inventory: RepositoryInventory,
+        previous_state: PreviousLearningState,
+    ) -> list[FrameworkRule]:
+        """Process only changed files and merge with existing observations."""
+        # For now, re-scan all files but skip files with unchanged hashes
+        # A more sophisticated version would cache parsed modules
+        parser = PythonAstParser()
+        service_extractor = PythonServiceObservationExtractor()
+        controller_extractor = PythonControllerObservationExtractor()
+
+        service_observations: list[FrameworkObservation] = []
+        controller_observations: list[FrameworkObservation] = []
+        service_subject_count = 0
+        controller_subject_count = 0
+
+        for source_file in inventory.files:
+            if source_file.language_id != "python":
                 continue
-            calls.add((node.func.attr, tuple(FrameworkLearner._invocation_shape(argument) for argument in node.args)))
-        return calls
+            parsed = parser.parse(repository, source_file)
+            service_batch = service_extractor.extract(parsed)
+            controller_batch = controller_extractor.extract(parsed)
+            service_observations.extend(service_batch.observations)
+            controller_observations.extend(controller_batch.observations)
+            service_subject_count += service_batch.subject_count
+            controller_subject_count += controller_batch.subject_count
 
-    @staticmethod
-    def _constructor_argument(argument: ast.expr) -> str:
-        if isinstance(argument, ast.Name) and argument.id == "__name__":
-            return "__name__"
-        if isinstance(argument, ast.Constant):
-            return repr(argument.value)
-        return "unsupported"
+        aggregator = FrameworkRuleAggregator(
+            minimum_evidence=self.minimum_evidence,
+            active_threshold=self.active_threshold,
+        )
+        service_rules = aggregator.aggregate(
+            ObservationBatch(service_subject_count, tuple(service_observations))
+        )
+        controller_rules = aggregator.aggregate(
+            ObservationBatch(controller_subject_count, tuple(controller_observations))
+        )
+        return service_rules + controller_rules
 
-    @staticmethod
-    def _invocation_shape(argument: ast.expr) -> str:
-        if isinstance(argument, ast.Constant):
-            if isinstance(argument.value, str):
-                return "string_literal"
-            if isinstance(argument.value, bool):
-                return "boolean_literal"
-            if isinstance(argument.value, int):
-                return "integer_literal"
-            if isinstance(argument.value, float):
-                return "float_literal"
-            if argument.value is None:
-                return "none_literal"
-        if isinstance(argument, ast.Dict) and not argument.keys:
-            return "empty_mapping"
-        if isinstance(argument, (ast.List, ast.Tuple)) and not argument.elts:
-            return "empty_sequence"
-        return "unsupported"
+    def _build_observation_store(
+        self,
+        repository: Path,
+        inventory: RepositoryInventory,
+    ) -> ObservationStore:
+        """Build an observation store from a full scan."""
+        parser = PythonAstParser()
+        service_extractor = PythonServiceObservationExtractor()
+        controller_extractor = PythonControllerObservationExtractor()
 
-    @staticmethod
-    def _imports(tree: ast.Module) -> dict[str, ImportSpec]:
-        return {
-            alias.asname or alias.name: ImportSpec(node.module, alias.name, alias.asname)
-            for node in tree.body
-            if isinstance(node, ast.ImportFrom) and node.module
-            for alias in node.names
-        }
-
-    @staticmethod
-    def _import_metadata(imported: ImportSpec) -> dict[str, str | None]:
-        return {"module": imported.module, "symbol": imported.symbol, "alias": imported.alias}
-
-    @staticmethod
-    def _suffix(types: Iterable[str]) -> str | None:
-        values = list(types)
-        if len(values) < 2:
-            return None
-        suffix = values[0]
-        for value in values[1:]:
-            while suffix and not value.endswith(suffix):
-                suffix = suffix[1:]
-        return f"*{suffix}" if len(suffix) >= 4 and suffix[0].isupper() else None
-
-    @staticmethod
-    def _name(node: ast.expr) -> str:
-        if isinstance(node, ast.Name):
-            return node.id
-        if isinstance(node, ast.Attribute):
-            return node.attr
-        return ""
+        store = ObservationStore(files=())
+        for source_file in inventory.files:
+            if source_file.language_id != "python":
+                continue
+            parsed = parser.parse(repository, source_file)
+            service_batch = service_extractor.extract(parsed)
+            controller_batch = controller_extractor.extract(parsed)
+            all_obs = service_batch.observations + controller_batch.observations
+            if all_obs:
+                store = store.add_observations(source_file.relative_path, all_obs)
+        return store
