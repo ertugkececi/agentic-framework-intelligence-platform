@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope
+from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleReview
 
 
 class DBAPICursor(Protocol):
@@ -45,6 +45,25 @@ CREATE TABLE IF NOT EXISTS framework_rule (
 CREATE INDEX IF NOT EXISTS framework_rule_scope_kind_status_idx
   ON framework_rule
   (customer_id, framework_id, framework_version_id, project_id, module_id, kind, status);
+CREATE TABLE IF NOT EXISTS rule_review (
+  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  rule_kind TEXT NOT NULL,
+  expected_value JSONB NOT NULL,
+  action TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  replacement_json JSONB,
+  reviewed_at TIMESTAMPTZ NOT NULL,
+  customer_id TEXT NOT NULL,
+  framework_id TEXT NOT NULL,
+  framework_version_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  module_id TEXT
+);
+CREATE INDEX IF NOT EXISTS rule_review_scope_rule_idx
+  ON rule_review
+  (customer_id, framework_id, framework_version_id, project_id, module_id,
+   rule_kind, reviewed_at);
 CREATE TABLE IF NOT EXISTS framework_knowledge_metadata (
   customer_id TEXT NOT NULL,
   framework_id TEXT NOT NULL,
@@ -130,6 +149,47 @@ class PostgresKnowledgeStore:
                     [self._rule_parameters(rule) for rule in scoped_rules],
                 )
 
+    def append_rule_review(self, review: RuleReview) -> None:
+        """Append one immutable review event within its mandatory tenant scope."""
+        with self.connection:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """INSERT INTO rule_review
+                    (rule_kind, expected_value, action, actor, comment, replacement_json,
+                     reviewed_at, customer_id, framework_id, framework_version_id,
+                     project_id, module_id)
+                    VALUES (%s, %s::jsonb, %s, %s, %s, %s::jsonb, %s,
+                            %s, %s, %s, %s, %s)""",
+                    (
+                        review.rule_kind,
+                        json.dumps(review.expected_value),
+                        str(review.action),
+                        review.actor,
+                        review.comment,
+                        json.dumps(dict(review.replacement)) if review.replacement is not None else None,
+                        review.reviewed_at,
+                        *review.scope.hierarchy,
+                    ),
+                )
+
+    def rule_review_history(
+        self, rule_kind: str, expected_value: str, *, scope: KnowledgeScope,
+    ) -> list[RuleReview]:
+        with self.connection.cursor() as cursor:
+            cursor.execute(
+                """SELECT rule_kind, expected_value, action, actor, comment,
+                          replacement_json, reviewed_at, customer_id, framework_id,
+                          framework_version_id, project_id, module_id
+                   FROM rule_review
+                   WHERE rule_kind = %s AND expected_value = %s::jsonb
+                     AND customer_id = %s AND framework_id = %s
+                     AND framework_version_id = %s AND project_id = %s
+                     AND module_id IS NOT DISTINCT FROM %s
+                   ORDER BY reviewed_at, id""",
+                (rule_kind, json.dumps(expected_value), *scope.hierarchy),
+            )
+            return [self._to_review(row) for row in cursor.fetchall()]
+
     def active_rules_for(
         self,
         prefix: str,
@@ -210,4 +270,25 @@ class PostgresKnowledgeStore:
             framework_version=row["framework_version"],
             discovered_at=discovered_at,
             scope=scope,
+        )
+
+    @staticmethod
+    def _to_review(row: Mapping[str, Any]) -> RuleReview:
+        expected_value = row["expected_value"]
+        replacement = row["replacement_json"]
+        if not isinstance(expected_value, str):
+            expected_value = json.dumps(expected_value, sort_keys=True)
+        if isinstance(replacement, str):
+            replacement = json.loads(replacement)
+        reviewed_at = row["reviewed_at"]
+        if isinstance(reviewed_at, str):
+            reviewed_at = datetime.fromisoformat(reviewed_at)
+        return RuleReview(
+            rule_kind=row["rule_kind"], expected_value=expected_value,
+            scope=KnowledgeScope(
+                row["customer_id"], row["framework_id"], row["framework_version_id"],
+                row["project_id"], row["module_id"],
+            ),
+            action=row["action"], actor=row["actor"], comment=row["comment"],
+            replacement=replacement, reviewed_at=reviewed_at,
         )

@@ -6,9 +6,10 @@ import hashlib
 import os
 import sqlite3
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope
+from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleReview
 
 
 def repository_fingerprint(repository: Path) -> str:
@@ -40,6 +41,15 @@ class SQLiteKnowledgeStore:
         self.connection.execute("""
             CREATE TABLE IF NOT EXISTS framework_knowledge_metadata (
               id INTEGER PRIMARY KEY CHECK (id = 1), repository_fingerprint TEXT NOT NULL
+            )
+        """)
+        self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS rule_review (
+              id INTEGER PRIMARY KEY, rule_kind TEXT NOT NULL, expected_value TEXT NOT NULL,
+              action TEXT NOT NULL, actor TEXT NOT NULL, comment TEXT NOT NULL,
+              replacement_json TEXT, reviewed_at TEXT NOT NULL,
+              customer_id TEXT NOT NULL, framework_id TEXT NOT NULL,
+              framework_version_id TEXT NOT NULL, project_id TEXT NOT NULL, module_id TEXT
             )
         """)
         self.connection.commit()
@@ -98,6 +108,36 @@ class SQLiteKnowledgeStore:
         ).fetchone()
         return row["repository_fingerprint"] if row else None
 
+    def append_rule_review(self, review: RuleReview) -> None:
+        """Append a human decision; review records are never replaced with rules."""
+        with self.connection:
+            self.connection.execute(
+                """INSERT INTO rule_review
+                (rule_kind, expected_value, action, actor, comment, replacement_json,
+                 reviewed_at, customer_id, framework_id, framework_version_id,
+                 project_id, module_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    review.rule_kind, review.expected_value, str(review.action), review.actor,
+                    review.comment,
+                    json.dumps(dict(review.replacement)) if review.replacement is not None else None,
+                    review.reviewed_at.isoformat(), *review.scope.hierarchy,
+                ),
+            )
+
+    def rule_review_history(
+        self, rule_kind: str, expected_value: str, *, scope: KnowledgeScope,
+    ) -> list[RuleReview]:
+        rows = self.connection.execute(
+            """SELECT * FROM rule_review
+            WHERE rule_kind = ? AND expected_value = ?
+              AND customer_id = ? AND framework_id = ? AND framework_version_id = ?
+              AND project_id = ? AND module_id IS ?
+            ORDER BY reviewed_at, id""",
+            (rule_kind, expected_value, *scope.hierarchy),
+        ).fetchall()
+        return [self._to_review(row) for row in rows]
+
     def active_rules_for(
         self,
         prefix: str,
@@ -144,4 +184,17 @@ class SQLiteKnowledgeStore:
             origin=row["origin"], status=row["status"], framework_version=row["framework_version"],
             evidence=tuple(Evidence(**item) for item in json.loads(row["evidence_json"])),
             metadata=json.loads(row["metadata_json"]), scope=scope,
+        )
+
+    @staticmethod
+    def _to_review(row: sqlite3.Row) -> RuleReview:
+        return RuleReview(
+            rule_kind=row["rule_kind"], expected_value=row["expected_value"],
+            scope=KnowledgeScope(
+                row["customer_id"], row["framework_id"], row["framework_version_id"],
+                row["project_id"], row["module_id"],
+            ),
+            action=row["action"], actor=row["actor"], comment=row["comment"],
+            replacement=json.loads(row["replacement_json"]) if row["replacement_json"] else None,
+            reviewed_at=datetime.fromisoformat(row["reviewed_at"]),
         )

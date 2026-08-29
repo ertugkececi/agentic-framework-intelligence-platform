@@ -191,9 +191,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 4C — Rule provenance and review history — COMPLETE
+
+Delivered:
+
+- Typed support/conflict evidence polarity with invalid-value rejection
+- Complete rule-origin vocabulary including imported knowledge
+- Immutable approve/reject/edit review records with validated actor and edit replacement
+- Append-only, tenant/version-scoped review history in SQLite and PostgreSQL adapters
+- PostgreSQL JSONB replacement payloads and deterministic chronological retrieval
+- Review persistence port shared by local and production stores
+
+Verification:
+
+```text
+RED: EvidencePolarity import failed during focused test collection
+focused provenance/review and structured-store tests: 13 passed
+complete suite: 180 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 4 slices
 
-- Rule evidence, conflicts, origin and review history
 - Candidate/active/rejected/superseded/deprecated lifecycle
 
 ## Milestone 5 — Semantic code and documentation retrieval

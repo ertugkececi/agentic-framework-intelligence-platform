@@ -12,6 +12,18 @@ class RuleOrigin(StrEnum):
     LLM_INFERRED = "llm_inferred"
     HUMAN_APPROVED = "human_approved"
     HUMAN_EDITED = "human_edited"
+    IMPORTED = "imported"
+
+
+class EvidencePolarity(StrEnum):
+    SUPPORT = "support"
+    CONFLICT = "conflict"
+
+
+class RuleReviewAction(StrEnum):
+    APPROVE = "approve"
+    REJECT = "reject"
+    EDIT = "edit"
 
 
 class RuleStatus(StrEnum):
@@ -25,7 +37,14 @@ class Evidence:
     source_path: str
     symbol: str
     observation: str
-    polarity: str = "support"
+    polarity: EvidencePolarity = EvidencePolarity.SUPPORT
+
+    def __post_init__(self) -> None:
+        try:
+            polarity = EvidencePolarity(self.polarity)
+        except ValueError as exc:
+            raise ValueError("polarity must be support or conflict") from exc
+        object.__setattr__(self, "polarity", polarity)
 
 
 @dataclass(frozen=True)
@@ -62,6 +81,40 @@ class KnowledgeScope:
             self.project_id,
             self.module_id,
         )
+
+
+@dataclass(frozen=True)
+class RuleReview:
+    """Immutable, scope-bound human decision recorded without mutating evidence."""
+
+    rule_kind: str
+    expected_value: str
+    scope: KnowledgeScope
+    action: RuleReviewAction
+    actor: str
+    comment: str = ""
+    replacement: Mapping[str, object] | None = None
+    reviewed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("rule_kind", self.rule_kind),
+            ("expected_value", self.expected_value),
+            ("actor", self.actor),
+        ):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        try:
+            action = RuleReviewAction(self.action)
+        except ValueError as exc:
+            raise ValueError("action must be approve, reject, or edit") from exc
+        object.__setattr__(self, "action", action)
+        if action is RuleReviewAction.EDIT and not self.replacement:
+            raise ValueError("edit review requires replacement")
+        if action is not RuleReviewAction.EDIT and self.replacement is not None:
+            raise ValueError("replacement is only valid for edit reviews")
+        if self.reviewed_at.tzinfo is None:
+            raise ValueError("reviewed_at must be timezone-aware")
 
 
 @dataclass(frozen=True)
