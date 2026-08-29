@@ -185,7 +185,7 @@ class CodeExample:
     source_path: str
     symbol: str
     snippet: str
-    score: int = 0
+    score: float = 0.0
     reasons: tuple[str, ...] = ()
 
 

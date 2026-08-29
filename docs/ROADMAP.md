@@ -312,9 +312,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-Remaining slices:
+### Milestone 5D — Representative example mining — COMPLETE
 
-- Representative example mining
+Delivered:
+
+- Provider-neutral semantic-match to `CodeExample` mining boundary
+- Mandatory tenant/version/project/module scope validation before context admission
+- Source-only and symbol-bearing representative example enforcement
+- Deterministic similarity ordering and source-symbol deduplication
+- Bounded result size with bounded duplicate-candidate overfetch
+- Semantic score and selection-reason provenance
+- Fail-closed malformed, non-finite and cross-scope candidate handling
+
+Verification:
+
+```text
+RED: representative example mining module import failed during focused test collection
+focused example-mining and semantic retrieval tests: 18 passed
+complete suite: 202 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+Remaining slice:
+
 - Rule + example + dependency `CodingContext` assembly
 
 ## Milestone 6 — Production LangGraph development engine
