@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
+from agentic_platform.security.policy import Capability, CapabilityGrant
+
 from agentic_platform.domain.models import (
     Evidence, FrameworkRule, KnowledgeScope, RuleReview, RuleStatus,
     validate_rule_status_transition,
@@ -87,15 +89,28 @@ class PostgresKnowledgeStore:
     psycopg accordingly and keeps the provider dependency outside domain code.
     """
 
-    def __init__(self, connection: DBAPIConnection, *, initialize_schema: bool = True) -> None:
+    def __init__(
+        self, connection: DBAPIConnection, *, grant: CapabilityGrant,
+        initialize_schema: bool = True,
+    ) -> None:
+        if not isinstance(grant, CapabilityGrant):
+            raise TypeError("grant must be a CapabilityGrant")
         self.connection = connection
+        self._grant = grant
         if initialize_schema:
+            self._grant.require(Capability.DATABASE_WRITE)
             with self.connection:
                 with self.connection.cursor() as cursor:
                     cursor.execute(_SCHEMA)
 
     @classmethod
-    def from_dsn(cls, dsn: str, *, initialize_schema: bool = True) -> "PostgresKnowledgeStore":
+    def from_dsn(
+        cls, dsn: str, *, grant: CapabilityGrant, initialize_schema: bool = True,
+    ) -> "PostgresKnowledgeStore":
+        if not isinstance(grant, CapabilityGrant):
+            raise TypeError("grant must be a CapabilityGrant")
+        if initialize_schema:
+            grant.require(Capability.DATABASE_WRITE)
         try:
             import psycopg
             from psycopg.rows import dict_row
@@ -103,7 +118,7 @@ class PostgresKnowledgeStore:
             raise RuntimeError("PostgreSQL support requires the psycopg dependency") from exc
         return cls(
             psycopg.connect(dsn, row_factory=dict_row),
-            initialize_schema=initialize_schema,
+            grant=grant, initialize_schema=initialize_schema,
         )
 
     def replace_rules(
@@ -113,6 +128,7 @@ class PostgresKnowledgeStore:
         *,
         scope: KnowledgeScope | None = None,
     ) -> None:
+        self._grant.require(Capability.DATABASE_WRITE)
         if scope is None:
             raise ValueError("PostgreSQL rule writes require an explicit scope")
         scoped_rules: list[FrameworkRule] = []
@@ -154,6 +170,7 @@ class PostgresKnowledgeStore:
 
     def append_rule_review(self, review: RuleReview) -> None:
         """Append one immutable review event within its mandatory tenant scope."""
+        self._grant.require(Capability.DATABASE_WRITE)
         with self.connection:
             with self.connection.cursor() as cursor:
                 cursor.execute(
@@ -178,6 +195,7 @@ class PostgresKnowledgeStore:
     def rule_review_history(
         self, rule_kind: str, expected_value: str, *, scope: KnowledgeScope,
     ) -> list[RuleReview]:
+        self._grant.require(Capability.DATABASE_READ)
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """SELECT rule_kind, expected_value, action, actor, comment,
@@ -202,6 +220,8 @@ class PostgresKnowledgeStore:
         scope: KnowledgeScope | None = None,
     ) -> FrameworkRule:
         """Atomically move one production rule through the scoped lifecycle."""
+        self._grant.require(Capability.DATABASE_READ)
+        self._grant.require(Capability.DATABASE_WRITE)
         if scope is None:
             raise ValueError("rule status transitions require an explicit scope")
         try:
@@ -243,6 +263,7 @@ class PostgresKnowledgeStore:
         *,
         scope: KnowledgeScope | None = None,
     ) -> list[FrameworkRule]:
+        self._grant.require(Capability.DATABASE_READ)
         if scope is None:
             raise ValueError("PostgreSQL rule retrieval requires an explicit scope")
         with self.connection.cursor() as cursor:

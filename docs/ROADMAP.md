@@ -501,9 +501,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7B — PostgreSQL production adapter capability enforcement — COMPLETE
+
+Delivered:
+
+- Mandatory typed capability grants for PostgreSQL adapter construction
+- Database-write authorization before schema initialization or DSN connection
+- Independent database-read and database-write enforcement per adapter operation
+- Combined read/write authorization for atomic rule lifecycle transitions
+- Fail-closed denial before transactions, cursors, dependency loading or network access
+
+Verification:
+
+```text
+RED: PostgreSQL adapter rejected the grant contract; unauthorized DSN creation attempted network access
+focused PostgreSQL capability/review/lifecycle tests: 15 passed
+complete suite: 219 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Capability enforcement for remaining production adapter operations
+- Capability enforcement for remaining production adapter operations (Qdrant)
 - Sandboxed worktrees/containers
 - Tenant boundaries and RBAC
 - Secret references, egress policy and redaction

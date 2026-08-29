@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
 from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleStatus
 from agentic_platform.framework_knowledge.postgres_store import PostgresKnowledgeStore
 from agentic_platform.framework_knowledge.store import RuleKnowledgeStore
+from agentic_platform.security.policy import Capability, CapabilityGrant
 
 
 class RecordingCursor:
@@ -47,6 +49,11 @@ class RecordingConnection:
         self.closed = True
 
 
+def _database_grant(*capabilities: Capability) -> CapabilityGrant:
+    allowed = capabilities or (Capability.DATABASE_READ, Capability.DATABASE_WRITE)
+    return CapabilityGrant(frozenset(allowed), Path.cwd())
+
+
 def _scope(module: str | None = "api") -> KnowledgeScope:
     return KnowledgeScope("tenant", "framework", "2.0", "project", module)
 
@@ -68,7 +75,7 @@ def _rule(scope: KnowledgeScope | None = None) -> FrameworkRule:
 def test_postgres_adapter_satisfies_shared_rule_store_port_and_creates_jsonb_schema() -> None:
     connection = RecordingConnection()
 
-    store: RuleKnowledgeStore = PostgresKnowledgeStore(connection)
+    store: RuleKnowledgeStore = PostgresKnowledgeStore(connection, grant=_database_grant())
 
     schema = connection.cursor_instance.calls[0][0]
     assert "CREATE TABLE IF NOT EXISTS framework_rule" in schema
@@ -80,7 +87,7 @@ def test_postgres_adapter_satisfies_shared_rule_store_port_and_creates_jsonb_sch
 
 def test_postgres_replace_is_atomic_scoped_and_serializes_jsonb() -> None:
     connection = RecordingConnection()
-    store = PostgresKnowledgeStore(connection)
+    store = PostgresKnowledgeStore(connection, grant=_database_grant())
     scope = _scope()
     transactions_after_schema = connection.transactions
 
@@ -99,7 +106,7 @@ def test_postgres_replace_is_atomic_scoped_and_serializes_jsonb() -> None:
 
 
 def test_postgres_rejects_unscoped_or_mismatched_writes() -> None:
-    store = PostgresKnowledgeStore(RecordingConnection())
+    store = PostgresKnowledgeStore(RecordingConnection(), grant=_database_grant())
     scope = _scope()
 
     with pytest.raises(ValueError, match="explicit scope"):
@@ -130,7 +137,7 @@ def test_postgres_active_rule_query_round_trips_jsonb_and_scope() -> None:
         "module_id": scope.module_id,
     }
     connection = RecordingConnection([row])
-    store = PostgresKnowledgeStore(connection)
+    store = PostgresKnowledgeStore(connection, grant=_database_grant())
 
     result = store.active_rules_for("service", scope=scope)
 
@@ -157,7 +164,7 @@ def test_postgres_rule_transition_is_atomic_and_scope_filtered() -> None:
         "project_id": scope.project_id, "module_id": scope.module_id,
     }
     connection = RecordingConnection([row])
-    store = PostgresKnowledgeStore(connection)
+    store = PostgresKnowledgeStore(connection, grant=_database_grant())
 
     transitioned = store.transition_rule_status(
         rule.kind, rule.expected_value, RuleStatus.ACTIVE, scope=scope
@@ -172,3 +179,48 @@ def test_postgres_rule_transition_is_atomic_and_scope_filtered() -> None:
 
     with pytest.raises(ValueError, match="explicit scope"):
         store.transition_rule_status(rule.kind, rule.expected_value, RuleStatus.ACTIVE)
+
+
+def test_postgres_requires_typed_database_authority_before_schema_initialization() -> None:
+    connection = RecordingConnection()
+
+    with pytest.raises(TypeError, match="grant"):
+        PostgresKnowledgeStore(connection)
+    with pytest.raises(TypeError, match="CapabilityGrant"):
+        PostgresKnowledgeStore(connection, grant=None)  # type: ignore[arg-type]
+
+    assert connection.cursor_instance.calls == []
+
+
+def test_postgres_checks_read_and_write_capabilities_before_database_access() -> None:
+    read_connection = RecordingConnection()
+    read_only = PostgresKnowledgeStore(
+        read_connection, grant=_database_grant(Capability.DATABASE_READ),
+        initialize_schema=False,
+    )
+    with pytest.raises(PermissionError, match="database_write"):
+        read_only.replace_rules([_rule()], scope=_scope())
+    assert read_connection.cursor_instance.calls == []
+    assert read_connection.transactions == 0
+
+    write_connection = RecordingConnection()
+    write_only = PostgresKnowledgeStore(
+        write_connection, grant=_database_grant(Capability.DATABASE_WRITE),
+        initialize_schema=False,
+    )
+    with pytest.raises(PermissionError, match="database_read"):
+        write_only.active_rules_for("service", scope=_scope())
+    assert write_connection.cursor_instance.calls == []
+    assert write_connection.transactions == 0
+
+
+def test_postgres_dsn_factory_denies_invalid_or_schema_read_only_grant_before_connect() -> None:
+    with pytest.raises(TypeError, match="CapabilityGrant"):
+        PostgresKnowledgeStore.from_dsn(
+            "postgresql://database.invalid/knowledge", grant=None  # type: ignore[arg-type]
+        )
+    with pytest.raises(PermissionError, match="database_write"):
+        PostgresKnowledgeStore.from_dsn(
+            "postgresql://database.invalid/knowledge",
+            grant=_database_grant(Capability.DATABASE_READ),
+        )
