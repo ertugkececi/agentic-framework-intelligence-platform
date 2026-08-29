@@ -10,10 +10,13 @@ from typing import Callable, TypedDict
 
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command, interrupt
 
 from agentic_platform.agents.development import (
     ChangePlan, ChangePlanner, ChangeReview, ChangeReviewer,
     DeterministicChangePlanner, DeterministicChangeReviewer,
+    HumanApprovalDecision, HumanApprovalPolicy, HumanApprovalRequest,
+    NoHumanApprovalRequired,
 )
 from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationFinding, ValidationReport
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
@@ -71,6 +74,9 @@ class DevelopmentState(TypedDict, total=False):
     framework_rules: list[FrameworkRule]
     coding_context: CodingContext
     plan: ChangePlan
+    approval_required: bool
+    approval_request: HumanApprovalRequest
+    approval_decision: HumanApprovalDecision
     generated_change: GeneratedChange
     review: ChangeReview
     generated_files: list[str]
@@ -115,6 +121,7 @@ class DevelopmentService:
         model_factory: Callable[[], CodingModel] = DeterministicPythonCodingModel,
         planner_factory: Callable[[], ChangePlanner] = DeterministicChangePlanner,
         reviewer_factory: Callable[[], ChangeReviewer] = DeterministicChangeReviewer,
+        approval_policy_factory: Callable[[], HumanApprovalPolicy] = NoHumanApprovalRequired,
         build_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         test_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         validator: Callable[[Path, list[FrameworkRule]], ValidationReport] = validate_service,
@@ -127,9 +134,11 @@ class DevelopmentService:
         self._model_factory = model_factory
         self._planner_factory = planner_factory
         self._reviewer_factory = reviewer_factory
+        self._approval_policy_factory = approval_policy_factory
         self._model: CodingModel | None = None
         self._planner: ChangePlanner | None = None
         self._reviewer: ChangeReviewer | None = None
+        self._approval_policy: HumanApprovalPolicy | None = None
         self._run_grant: CapabilityGrant | None = None
         self._staging_authorization: _StagingAuthorization | None = None
         self._build_runner = build_runner
@@ -174,9 +183,11 @@ class DevelopmentService:
             }
         stage = workspace.resolve() / ".development-staging" / uuid.uuid4().hex
         staging_authorization: _StagingAuthorization | None = None
+        preserve_stage = False
         self._model = None
         self._planner = None
         self._reviewer = None
+        self._approval_policy = None
         self._run_grant = grant
         try:
             shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
@@ -201,18 +212,100 @@ class DevelopmentService:
                 )
                 result["grant"] = grant
                 result["staging_authorization"] = staging_authorization
+                preserve_stage = result.get("status") == "needs_human_review"
                 return result
         finally:
             self._model = None
             self._planner = None
             self._reviewer = None
+            self._approval_policy = None
             self._run_grant = None
             self._staging_authorization = None
             _revoke_staging_authorization(staging_authorization)
-            shutil.rmtree(stage, ignore_errors=True)
-            parent = stage.parent
-            if parent.exists() and not any(parent.iterdir()):
-                parent.rmdir()
+            if not preserve_stage:
+                self._remove_staging_copy(stage)
+
+    def resume(
+        self,
+        workspace: Path,
+        repository: Path,
+        run_id: str,
+        decision: HumanApprovalDecision,
+        *,
+        grant: CapabilityGrant | None = None,
+    ) -> DevelopmentState:
+        """Resume one persisted approval interrupt with fresh runtime authority."""
+        if not isinstance(run_id, str) or not run_id.strip():
+            raise ValueError("run_id must be a non-empty string")
+        if not isinstance(decision, HumanApprovalDecision):
+            raise ValueError("a typed human approval decision is required")
+        workspace = workspace.resolve()
+        repository = repository.resolve()
+        if not isinstance(grant, CapabilityGrant):
+            return {"repository": str(repository), "status": "failed", "events": ["capability_grant_required"]}
+        denied = self._preflight(grant, repository)
+        if denied:
+            return {"repository": str(repository), "status": "failed", "events": [denied]}
+
+        checkpoint_path = self.checkpoint_database_path(workspace)
+        if not checkpoint_path.is_file():
+            return {"repository": str(repository), "status": "failed", "events": ["approval_resume_not_found"]}
+        config = {"configurable": {"thread_id": run_id}}
+        staging_authorization: _StagingAuthorization | None = None
+        stage: Path | None = None
+        preserve_stage = False
+        self._model = None
+        self._planner = None
+        self._reviewer = None
+        self._approval_policy = None
+        self._run_grant = grant
+        try:
+            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+                graph = self.build_graph(checkpointer=checkpointer)
+                state = graph.get_state(config).values
+                if (
+                    state.get("run_id") != run_id
+                    or state.get("workspace") != str(workspace)
+                    or state.get("repository") != str(repository)
+                    or state.get("status") != "needs_human_review"
+                ):
+                    return {"repository": str(repository), "status": "failed", "events": ["approval_resume_invalid"]}
+                stage = Path(state["staging_repository"]).resolve()
+                staging_parent = workspace / ".development-staging"
+                if stage.parent != staging_parent or not stage.is_dir():
+                    return {"repository": str(repository), "status": "failed", "events": ["approval_staging_missing"]}
+                lifecycle = _register_staging_copy(workspace, repository, stage)
+                staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
+                self._staging_authorization = staging_authorization
+                result = graph.invoke(
+                    Command(resume={
+                        "approved": decision.approved,
+                        "actor": decision.actor,
+                        "reason": self._redact(decision.reason),
+                    }),
+                    {**config, "recursion_limit": 12 + 8 * (state["retry_budget"] + 1)},
+                )
+                result["grant"] = grant
+                result["staging_authorization"] = staging_authorization
+                preserve_stage = result.get("status") == "needs_human_review"
+                return result
+        finally:
+            self._model = None
+            self._planner = None
+            self._reviewer = None
+            self._approval_policy = None
+            self._run_grant = None
+            self._staging_authorization = None
+            _revoke_staging_authorization(staging_authorization)
+            if stage is not None and not preserve_stage:
+                self._remove_staging_copy(stage)
+
+    @staticmethod
+    def _remove_staging_copy(stage: Path) -> None:
+        shutil.rmtree(stage, ignore_errors=True)
+        parent = stage.parent
+        if parent.exists() and not any(parent.iterdir()):
+            parent.rmdir()
 
     @staticmethod
     def _preflight(grant: CapabilityGrant, repository: Path) -> str | None:
@@ -264,6 +357,7 @@ class DevelopmentService:
         graph = StateGraph(DevelopmentState)
         for name, node in (
             ("parse", self._parse_task), ("retrieve", self._retrieve), ("plan", self._plan),
+            ("approval_request", self._request_approval), ("approval", self._approval),
             ("generate", self._generate),
             ("repair", self._repair), ("apply", self._apply), ("build", self._build),
             ("build_failure", self._record_build_failure), ("tests", self._tests),
@@ -275,7 +369,9 @@ class DevelopmentService:
         graph.add_edge(START, "parse")
         graph.add_conditional_edges("parse", self._after_parse, {"retrieve": "retrieve", "final": "final"})
         graph.add_conditional_edges("retrieve", self._after_retrieve, {"plan": "plan", "final": "final"})
-        graph.add_conditional_edges("plan", self._after_plan, {"generate": "generate", "final": "final"})
+        graph.add_conditional_edges("plan", self._after_plan, {"approval_request": "approval_request", "generate": "generate", "final": "final"})
+        graph.add_edge("approval_request", "approval")
+        graph.add_conditional_edges("approval", self._after_approval, {"generate": "generate", "final": "final"})
         graph.add_conditional_edges("generate", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_conditional_edges("apply", self._after_apply, {"build": "build", "final": "final"})
         graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
@@ -348,13 +444,63 @@ class DevelopmentService:
             )
             if not isinstance(plan, ChangePlan):
                 raise TypeError("planner returned an invalid plan")
+            if self._approval_policy is None:
+                self._approval_policy = self._approval_policy_factory()
+            approval_required = self._approval_policy.requires_approval(plan)
+            if not isinstance(approval_required, bool):
+                raise TypeError("approval policy returned an invalid decision")
         except Exception:
             return {"status": "failed", **self._event(state, "change_planning_failed")}
-        return {"plan": plan, **self._event(state, "change_planned")}
+        return {"plan": plan, "approval_required": approval_required, **self._event(state, "change_planned")}
 
     @staticmethod
     def _after_plan(state: DevelopmentState) -> str:
-        return "final" if state.get("status") == "failed" else "generate"
+        if state.get("status") == "failed":
+            return "final"
+        return "approval_request" if state["approval_required"] else "generate"
+
+    def _request_approval(self, state: DevelopmentState) -> dict[str, object]:
+        plan = state["plan"]
+        request = HumanApprovalRequest(
+            run_id=state["run_id"],
+            artifact_family=plan.artifact_family,
+            artifact_name=plan.artifact_name,
+            target_paths=plan.target_paths,
+            rule_kinds=plan.rule_kinds,
+        )
+        return {
+            "approval_request": request,
+            "status": "needs_human_review",
+            **self._event(state, "human_approval_requested"),
+        }
+
+    def _approval(self, state: DevelopmentState) -> dict[str, object]:
+        request = state["approval_request"]
+        payload = interrupt({
+            "run_id": request.run_id,
+            "artifact_family": request.artifact_family,
+            "artifact_name": request.artifact_name,
+            "target_paths": request.target_paths,
+            "rule_kinds": request.rule_kinds,
+        })
+        try:
+            if not isinstance(payload, dict):
+                raise ValueError("approval payload must be a mapping")
+            decision = HumanApprovalDecision(
+                payload.get("approved"), payload.get("actor", ""), payload.get("reason", "")
+            )
+        except (TypeError, ValueError):
+            return {"status": "failed", **self._event(state, "human_approval_invalid")}
+        event = "human_approval_granted" if decision.approved else "human_approval_rejected"
+        return {
+            "approval_decision": decision,
+            "status": "running" if decision.approved else "failed",
+            **self._event(state, event),
+        }
+
+    @staticmethod
+    def _after_approval(state: DevelopmentState) -> str:
+        return "generate" if state.get("status") == "running" else "final"
 
     def _generate(self, state: DevelopmentState) -> dict[str, object]:
         try:

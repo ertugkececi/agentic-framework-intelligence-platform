@@ -31,6 +31,40 @@ class ChangePlan:
 
 
 @dataclass(frozen=True)
+class HumanApprovalRequest:
+    run_id: str
+    artifact_family: str
+    artifact_name: str
+    target_paths: tuple[str, ...]
+    rule_kinds: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not all(isinstance(value, str) and value.strip() for value in (
+            self.run_id, self.artifact_family, self.artifact_name,
+        )):
+            raise ValueError("approval request identity must be non-empty")
+        if not self.target_paths:
+            raise ValueError("approval request requires target paths")
+        for path in self.target_paths:
+            _validate_target_path(path)
+
+
+@dataclass(frozen=True)
+class HumanApprovalDecision:
+    approved: bool
+    actor: str
+    reason: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.approved, bool):
+            raise ValueError("approval decision must be boolean")
+        if not all(isinstance(value, str) and value.strip() for value in (self.actor, self.reason)):
+            raise ValueError("approval actor and reason must be non-empty")
+        if len(self.actor) > 256 or len(self.reason) > 1_000:
+            raise ValueError("approval actor or reason exceeds its bounded size")
+
+
+@dataclass(frozen=True)
 class ChangeReview:
     approved: bool
     reason: str
@@ -48,6 +82,15 @@ class ChangePlanner(Protocol):
 
 class ChangeReviewer(Protocol):
     def review(self, plan: ChangePlan, change: GeneratedChange, report: ValidationReport) -> ChangeReview: ...
+
+
+class HumanApprovalPolicy(Protocol):
+    def requires_approval(self, plan: ChangePlan) -> bool: ...
+
+
+class NoHumanApprovalRequired:
+    def requires_approval(self, plan: ChangePlan) -> bool:
+        return False
 
 
 class DeterministicChangePlanner:

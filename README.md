@@ -187,6 +187,6 @@ Bu iterasyonun kasıtlı limitleri:
 - Semantic/vector retrieval yoktur; representative service snippet’leri AST/source’dan alınır.
 - SQLite tek-process demo store’dur; versioned tenant store değildir.
 - Model local deterministic adapter’dır; gerçek provider adapters sonraki iterasyondadır.
-- Retry/checkpoint/human approval production tasarımında bulunur, minimal working graph’ta uygulanmamıştır.
+- Retry, SQLite checkpoint ve policy-driven human approval interrupt/resume akışları uygulanmıştır; reproducible artifact/audit kayıtları sonraki iterasyondadır.
 
 Detaylı hedef mimari ve sonraki üretim genişletme sınırları için [ARCHITECTURE.md](ARCHITECTURE.md) dosyasına bakın.

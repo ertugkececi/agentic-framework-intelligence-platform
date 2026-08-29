@@ -428,9 +428,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-Remaining slices:
+### Milestone 6D — Human approval interrupts — COMPLETE
 
-- Human approval interrupts
+Delivered:
+
+- Typed, bounded human approval request and decision contracts
+- Policy-driven LangGraph interrupt before model generation
+- Durable `needs_human_review` state keyed by development run ID
+- Explicit approved/rejected resume operation with actor and reason provenance
+- Fresh capability and staging authorization checks on every resume
+- Cross-process resume from SQLite checkpoints without persisting runtime authority
+- Fail-closed rejection before generation and publish
+- Disposable staging preservation while pending and cleanup after terminal decisions
+
+Verification:
+
+```text
+RED: HumanApprovalDecision import failed during focused test collection
+focused human-approval/planning/checkpoint tests: 8 passed, 1 warning
+complete suite: 212 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+Remaining slice:
+
 - Reproducible run identity and artifact records
 
 ## Milestone 7 — Security and isolation
