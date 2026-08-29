@@ -480,7 +480,30 @@ security pattern scan: 0 match
 
 ## Milestone 7 — Security and isolation
 
-- Immutable capability grants across every adapter
+### Milestone 7A — Immutable capability grant foundation — COMPLETE
+
+Delivered:
+
+- Defensive capability snapshots that cannot inherit later caller mutations
+- Runtime rejection of untyped capability values
+- Canonical repository-root binding at grant construction
+- Shared immutable grant semantics across orchestration and repository/build/test adapters
+
+Verification:
+
+```text
+RED: mutable capability input expanded an existing grant; string capabilities were accepted
+focused capability and safe-execution tests: 26 passed, 1 warning
+complete suite: 216 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+### Remaining Milestone 7 slices
+
+- Capability enforcement for remaining production adapter operations
 - Sandboxed worktrees/containers
 - Tenant boundaries and RBAC
 - Secret references, egress policy and redaction

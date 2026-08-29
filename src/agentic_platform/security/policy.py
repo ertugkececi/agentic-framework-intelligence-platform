@@ -27,6 +27,14 @@ class CapabilityGrant:
     allowed: frozenset[Capability]
     repository_root: Path
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.repository_root, Path):
+            raise TypeError("repository_root must be a Path")
+        if not all(isinstance(capability, Capability) for capability in self.allowed):
+            raise TypeError("allowed entries must be Capability values")
+        object.__setattr__(self, "allowed", frozenset(self.allowed))
+        object.__setattr__(self, "repository_root", self.repository_root.resolve())
+
     def require(self, capability: Capability) -> None:
         if capability not in self.allowed:
             raise PermissionError(f"Capability denied: {capability}")
