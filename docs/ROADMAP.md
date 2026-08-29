@@ -264,9 +264,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 5B — Qdrant production adapter — COMPLETE
+
+Delivered:
+
+- Provider-neutral typed semantic-vector store port
+- Dependency-free Qdrant REST transport with validated endpoint, timeout and optional API key
+- Deterministic UUID mapping for content-addressed chunk identities
+- Dimension and finite-value validation before vector writes
+- Complete source/document payloads with mandatory tenant/version/project/module metadata
+- Scope- and path-filtered source deletion with null-safe module handling
+- Fail-closed collection names, source paths and transport failures
+
+Verification:
+
+```text
+RED: QdrantSemanticStore module import failed during focused test collection
+focused Qdrant adapter tests: 3 passed
+complete suite: 196 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining slices:
 
-- Qdrant or pgvector adapter
 - Metadata-filtered retrieval by tenant/version/project/module
 - Representative example mining
 - Rule + example + dependency `CodingContext` assembly
