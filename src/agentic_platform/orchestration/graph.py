@@ -8,6 +8,7 @@ from functools import partial
 from pathlib import Path
 from typing import Callable, TypedDict
 
+from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from agentic_platform.agents.development import (
@@ -59,6 +60,7 @@ _SECRET_PATTERNS = (
 
 
 class DevelopmentState(TypedDict, total=False):
+    run_id: str
     workspace: str
     repository: str
     staging_repository: str
@@ -128,12 +130,18 @@ class DevelopmentService:
         self._model: CodingModel | None = None
         self._planner: ChangePlanner | None = None
         self._reviewer: ChangeReviewer | None = None
+        self._run_grant: CapabilityGrant | None = None
+        self._staging_authorization: _StagingAuthorization | None = None
         self._build_runner = build_runner
         self._test_runner = test_runner
         self._validator = validator
         self._max_failure_output = max_failure_output
         self._command_timeout_seconds = command_timeout_seconds
         self._max_command_output = max_command_output
+
+    @staticmethod
+    def checkpoint_database_path(workspace: Path) -> Path:
+        return workspace.resolve() / "development_checkpoints.sqlite"
 
     def run(
         self,
@@ -142,11 +150,15 @@ class DevelopmentService:
         task: str = "Create GeneratedService",
         retry_budget: int = DEFAULT_RETRY_BUDGET,
         *,
+        run_id: str | None = None,
         grant: CapabilityGrant | None = None,
     ) -> DevelopmentState:
         """Run against a staging copy only with a caller-supplied capability grant."""
         if retry_budget < 0:
             raise ValueError("retry_budget must not be negative")
+        if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+            raise ValueError("run_id must be a non-empty string")
+        run_id = run_id or uuid.uuid4().hex
         repository = repository.resolve()
         if not isinstance(grant, CapabilityGrant):
             return {"repository": str(repository), "task": task, "status": "failed", "events": ["capability_grant_required"]}
@@ -165,24 +177,37 @@ class DevelopmentService:
         self._model = None
         self._planner = None
         self._reviewer = None
+        self._run_grant = grant
         try:
             shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
             lifecycle = _register_staging_copy(workspace, repository, stage)
             staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
-            return self.build_graph().invoke(
-                {
-                    "workspace": str(workspace.resolve()), "repository": str(repository),
-                    "staging_repository": str(stage), "staging_authorization": staging_authorization,
-                    "grant": grant, "task": task,
-                    "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
-                    "events": [], "status": "running",
-                },
-                {"recursion_limit": 12 + 8 * (retry_budget + 1)},
-            )
+            self._staging_authorization = staging_authorization
+            checkpoint_path = self.checkpoint_database_path(workspace)
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+                result = self.build_graph(checkpointer=checkpointer).invoke(
+                    {
+                        "run_id": run_id,
+                        "workspace": str(workspace.resolve()), "repository": str(repository),
+                        "staging_repository": str(stage), "task": task,
+                        "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
+                        "events": [], "status": "running",
+                    },
+                    {
+                        "configurable": {"thread_id": run_id},
+                        "recursion_limit": 12 + 8 * (retry_budget + 1),
+                    },
+                )
+                result["grant"] = grant
+                result["staging_authorization"] = staging_authorization
+                return result
         finally:
             self._model = None
             self._planner = None
             self._reviewer = None
+            self._run_grant = None
+            self._staging_authorization = None
             _revoke_staging_authorization(staging_authorization)
             shutil.rmtree(stage, ignore_errors=True)
             parent = stage.parent
@@ -235,7 +260,7 @@ class DevelopmentService:
             for requirement in dependency.required_invocations
         )
 
-    def build_graph(self):
+    def build_graph(self, *, checkpointer=None):
         graph = StateGraph(DevelopmentState)
         for name, node in (
             ("parse", self._parse_task), ("retrieve", self._retrieve), ("plan", self._plan),
@@ -264,7 +289,7 @@ class DevelopmentService:
         graph.add_conditional_edges("review_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_edge("publish", "final")
         graph.add_edge("final", END)
-        return graph.compile()
+        return graph.compile(checkpointer=checkpointer)
 
     @staticmethod
     def _event(state: DevelopmentState, text: str) -> dict[str, list[str]]:
@@ -345,6 +370,16 @@ class DevelopmentService:
             return {"status": "failed", **self._event(state, "model_repair_failed")}
         return {"generated_change": change, "retry_count": state["retry_count"] + 1, **self._event(state, "change_repaired")}
 
+    def _active_grant(self) -> CapabilityGrant:
+        if self._run_grant is None:
+            raise RuntimeError("development run capability is unavailable")
+        return self._run_grant
+
+    def _active_staging_authorization(self) -> _StagingAuthorization:
+        if self._staging_authorization is None:
+            raise RuntimeError("development staging authorization is unavailable")
+        return self._staging_authorization
+
     def _current_model(self) -> CodingModel:
         if self._model is None:
             self._model = self._model_factory()
@@ -357,8 +392,8 @@ class DevelopmentService:
     def _apply(self, state: DevelopmentState) -> dict[str, object]:
         try:
             files = apply_change(
-                state["generated_change"], Path(state["staging_repository"]), state["grant"],
-                allow_overwrite=True, staging_authorization=state["staging_authorization"],
+                state["generated_change"], Path(state["staging_repository"]), self._active_grant(),
+                allow_overwrite=True, staging_authorization=self._active_staging_authorization(),
             )
         except (ChangeValidationError, OSError, PermissionError):
             return {"status": "failed", **self._event(state, "change_apply_failed")}
@@ -371,16 +406,16 @@ class DevelopmentService:
     def _build(self, state: DevelopmentState) -> dict[str, CommandResult]:
         runner = self._build_runner or partial(
             run_build, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
-            staging_authorization=state["staging_authorization"],
+            staging_authorization=self._active_staging_authorization(),
         )
-        return {"build_result": self._run_command(runner, Path(state["staging_repository"]), state["grant"])}
+        return {"build_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
 
     def _tests(self, state: DevelopmentState) -> dict[str, CommandResult]:
         runner = self._test_runner or partial(
             run_tests, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
-            staging_authorization=state["staging_authorization"],
+            staging_authorization=self._active_staging_authorization(),
         )
-        return {"test_result": self._run_command(runner, Path(state["staging_repository"]), state["grant"])}
+        return {"test_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
 
     def _run_command(self, runner: Callable[[Path, CapabilityGrant], CommandResult], repository: Path, grant: CapabilityGrant) -> CommandResult:
         try:
@@ -391,7 +426,7 @@ class DevelopmentService:
 
     def _compliance(self, state: DevelopmentState) -> dict[str, ValidationReport]:
         try:
-            state["grant"].require(Capability.STATIC_ANALYSIS)
+            self._active_grant().require(Capability.STATIC_ANALYSIS)
             path = Path(state["staging_repository"]) / state["generated_files"][0]
             report = self._validator(path, state["framework_rules"])
             return {"validation_report": ValidationReport(
@@ -435,7 +470,7 @@ class DevelopmentService:
 
     def _publish(self, state: DevelopmentState) -> dict[str, object]:
         try:
-            files = apply_change(state["generated_change"], Path(state["repository"]), state["grant"])
+            files = apply_change(state["generated_change"], Path(state["repository"]), self._active_grant())
         except (ChangeValidationError, OSError, PermissionError):
             return {"status": "failed", **self._event(state, "publish_failed")}
         return {"generated_files": files, **self._event(state, "change_published")}

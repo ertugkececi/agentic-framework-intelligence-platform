@@ -405,9 +405,31 @@ focused planning/review and orchestration tests: 11 passed, 1 warning
 complete suite: 209 passed, 1 warning
 ```
 
+### Milestone 6C — Persistent development checkpoints — COMPLETE
+
+Delivered:
+
+- Disk-backed LangGraph SQLite checkpoints for every authorized development run
+- Caller-supplied or generated run IDs mapped to isolated checkpoint thread IDs
+- Workspace-local checkpoint database with deterministic location
+- Graph compilation against the production-compatible checkpointer port
+- Capability grants and factory-issued staging authorizations kept out of persisted graph state
+- Backward-compatible returned authorization evidence for lifecycle security assertions
+
+Verification:
+
+```text
+RED: DevelopmentService rejected the run_id checkpoint contract
+focused persistent-checkpoint test: 1 passed, 1 warning
+complete suite: 210 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining slices:
 
-- Persistent checkpoints
 - Human approval interrupts
 - Reproducible run identity and artifact records
 
