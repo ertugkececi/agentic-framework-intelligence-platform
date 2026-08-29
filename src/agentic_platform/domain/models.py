@@ -29,6 +29,42 @@ class Evidence:
 
 
 @dataclass(frozen=True)
+class KnowledgeScope:
+    """Complete tenant and framework-version boundary for stored knowledge."""
+
+    customer_id: str
+    framework_id: str
+    framework_version_id: str
+    project_id: str
+    module_id: str | None = None
+
+    def __post_init__(self) -> None:
+        required = (
+            ("customer_id", self.customer_id),
+            ("framework_id", self.framework_id),
+            ("framework_version_id", self.framework_version_id),
+            ("project_id", self.project_id),
+        )
+        for name, value in required:
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if self.module_id is not None and (
+            not isinstance(self.module_id, str) or not self.module_id.strip()
+        ):
+            raise ValueError("module_id must be None or a non-empty string")
+
+    @property
+    def hierarchy(self) -> tuple[str, str, str, str, str | None]:
+        return (
+            self.customer_id,
+            self.framework_id,
+            self.framework_version_id,
+            self.project_id,
+            self.module_id,
+        )
+
+
+@dataclass(frozen=True)
 class FrameworkRule:
     kind: str
     expected_value: str
@@ -41,6 +77,7 @@ class FrameworkRule:
     status: RuleStatus = RuleStatus.CANDIDATE
     framework_version: str = "1.0"
     discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    scope: KnowledgeScope | None = None
 
 
 @dataclass(frozen=True)

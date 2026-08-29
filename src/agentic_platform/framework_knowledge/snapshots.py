@@ -45,6 +45,13 @@ class FrameworkKnowledgeSnapshot:
         hasher.update(self.metadata.parser_version.encode("utf-8"))
         hasher.update(b"\x00")
         for rule in self.rules:
+            if rule.scope is None:
+                hasher.update(b"unscoped\x00")
+            else:
+                hasher.update(b"scoped\x00")
+                for scope_part in rule.scope.hierarchy:
+                    hasher.update((scope_part or "").encode("utf-8"))
+                    hasher.update(b"\x00")
             hasher.update(rule.kind.encode("utf-8"))
             hasher.update(b"\x00")
             hasher.update(rule.expected_value.encode("utf-8"))

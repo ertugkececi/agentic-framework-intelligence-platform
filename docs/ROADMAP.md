@@ -143,11 +143,35 @@ security pattern scan: 0 match
 
 ## Milestone 4 — Versioned structured knowledge
 
-- Customer → Framework → Framework Version → Project → Module scope
+### Milestone 4A — Tenant and version scope boundary — COMPLETE
+
+Delivered:
+
+- Immutable `KnowledgeScope` for Customer → Framework → Framework Version → Project → optional Module
+- Scope-bearing framework rules with backward-compatible unscoped construction
+- Scope-isolated SQLite replacement and active-rule retrieval
+- In-place SQLite schema migration for existing local knowledge databases
+- Scope-aware snapshot identities that cannot collide across tenants
+- Fail-closed unscoped retrieval that cannot expose scoped rules
+
+Verification:
+
+```text
+RED: KnowledgeScope import failed; scope-insensitive snapshot identity and implicit scoped-write assertions failed
+focused scope/snapshot tests: 15 passed
+complete suite: 172 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+### Remaining Milestone 4 slices
+
 - PostgreSQL + JSONB production adapter
 - Rule evidence, conflicts, origin and review history
 - Candidate/active/rejected/superseded/deprecated lifecycle
-- SQLite retained as a local adapter
+- SQLite retained as the local adapter while sharing the production store port
 
 ## Milestone 5 — Semantic code and documentation retrieval
 
