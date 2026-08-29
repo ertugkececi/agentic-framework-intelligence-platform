@@ -21,6 +21,7 @@ from agentic_platform.agents.development import (
 from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationFinding, ValidationReport
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
+from agentic_platform.framework_learning.inventory import RepositoryRevision, RepositoryScanner
 from agentic_platform.models.gateway import CodingModel, CodingModelError, DeterministicPythonCodingModel, FailureContext
 from agentic_platform.retrieval.context import (
     UnsupportedInvocationRequirementError,
@@ -28,6 +29,7 @@ from agentic_platform.retrieval.context import (
     retrieve_controller_context,
     retrieve_service_context,
 )
+from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -64,6 +66,9 @@ _SECRET_PATTERNS = (
 
 class DevelopmentState(TypedDict, total=False):
     run_id: str
+    repository_revision: str
+    model_identity: str
+    run_record_identity: str
     workspace: str
     repository: str
     staging_repository: str
@@ -152,6 +157,10 @@ class DevelopmentService:
     def checkpoint_database_path(workspace: Path) -> Path:
         return workspace.resolve() / "development_checkpoints.sqlite"
 
+    @staticmethod
+    def run_record_database_path(workspace: Path) -> Path:
+        return workspace.resolve() / "development_run_records.sqlite"
+
     def run(
         self,
         workspace: Path,
@@ -174,6 +183,12 @@ class DevelopmentService:
         denied = self._preflight(grant, repository)
         if denied:
             return {"repository": str(repository), "task": task, "status": "failed", "events": [denied]}
+        repository_revision = RepositoryRevision.from_inventory(RepositoryScanner().scan(repository)).value
+        factory_type = type(self._model_factory)
+        model_identity = (
+            f"{getattr(self._model_factory, '__module__', factory_type.__module__)}."
+            f"{getattr(self._model_factory, '__qualname__', factory_type.__qualname__)}"
+        )
         if self._empty_task_requires_invocation(workspace, repository, task):
             return {
                 "repository": str(repository),
@@ -199,7 +214,8 @@ class DevelopmentService:
             with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
                 result = self.build_graph(checkpointer=checkpointer).invoke(
                     {
-                        "run_id": run_id,
+                        "run_id": run_id, "repository_revision": repository_revision,
+                        "model_identity": model_identity,
                         "workspace": str(workspace.resolve()), "repository": str(repository),
                         "staging_repository": str(stage), "task": task,
                         "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
@@ -212,6 +228,7 @@ class DevelopmentService:
                 )
                 result["grant"] = grant
                 result["staging_authorization"] = staging_authorization
+                self._persist_run_record(workspace, result)
                 preserve_stage = result.get("status") == "needs_human_review"
                 return result
         finally:
@@ -263,8 +280,10 @@ class DevelopmentService:
             with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
                 graph = self.build_graph(checkpointer=checkpointer)
                 state = graph.get_state(config).values
+                current_revision = RepositoryRevision.from_inventory(RepositoryScanner().scan(repository)).value
                 if (
                     state.get("run_id") != run_id
+                    or state.get("repository_revision") != current_revision
                     or state.get("workspace") != str(workspace)
                     or state.get("repository") != str(repository)
                     or state.get("status") != "needs_human_review"
@@ -287,6 +306,7 @@ class DevelopmentService:
                 )
                 result["grant"] = grant
                 result["staging_authorization"] = staging_authorization
+                self._persist_run_record(workspace, result)
                 preserve_stage = result.get("status") == "needs_human_review"
                 return result
         finally:
@@ -299,6 +319,20 @@ class DevelopmentService:
             _revoke_staging_authorization(staging_authorization)
             if stage is not None and not preserve_stage:
                 self._remove_staging_copy(stage)
+
+    def _persist_run_record(self, workspace: Path, result: DevelopmentState) -> None:
+        record = DevelopmentRunRecord.capture(
+            run_id=result["run_id"], repository_revision=result["repository_revision"],
+            task=result["task"], model_identity=result["model_identity"],
+            retry_budget=result["retry_budget"], rules=result.get("framework_rules", []),
+            change=result.get("generated_change"), status=result["status"],
+        )
+        store = DevelopmentRunRecordStore(self.run_record_database_path(workspace))
+        try:
+            store.save(record)
+        finally:
+            store.close()
+        result["run_record_identity"] = record.identity
 
     @staticmethod
     def _remove_staging_copy(stage: Path) -> None:

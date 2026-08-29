@@ -453,9 +453,30 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-Remaining slice:
+### Milestone 6E — Reproducible run identity and artifact records — COMPLETE
 
-- Reproducible run identity and artifact records
+Delivered:
+
+- Immutable, content-addressed development run records
+- Input identity pinned to run ID, repository revision, task hash, model identity and retry policy
+- Deterministic selected-rule identities for knowledge replay provenance
+- Generated artifact path, SHA-256 content hash and byte-size records
+- SQLite audit adapter with payload identity verification on read
+- Fail-closed run-ID reuse for different inputs
+- Repository-revision validation before human-approval resume
+- Terminal and interrupted run record persistence alongside LangGraph checkpoints
+
+Verification:
+
+```text
+RED: development run record module import failed during focused test collection
+focused run-record/checkpoint/approval/planning tests: 10 passed, 1 warning
+complete suite: 214 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
 
 ## Milestone 7 — Security and isolation
 
