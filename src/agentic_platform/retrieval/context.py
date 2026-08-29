@@ -14,6 +14,7 @@ from agentic_platform.domain.models import (
     FrameworkRule,
     ImportSpec,
     InvocationRequirement,
+    KnowledgeScope,
     SourceDependency,
     SourceIndex,
     SourceIndexEntry,
@@ -112,9 +113,15 @@ def build_source_index(repository: Path) -> SourceIndex:
     return SourceIndex(tuple(entries))
 
 
-def retrieve_controller_context(store, repository: Path, task: DevelopmentTask | None = None):
+def retrieve_controller_context(
+    store,
+    repository: Path,
+    task: DevelopmentTask | None = None,
+    *,
+    scope: KnowledgeScope | None = None,
+):
     """Retrieve controller coding context mirroring the service path."""
-    rules = store.active_rules_for("controller")
+    rules = store.active_rules_for("controller", scope=scope)
     structure = retrieve_artifact_structure(rules, "controller")
     imports = list(structure.imports)
 
@@ -133,8 +140,17 @@ def retrieve_controller_context(store, repository: Path, task: DevelopmentTask |
     )
 
 
-def retrieve_service_context(store, repository: Path, task: DevelopmentTask | None = None):
-    rules = store.active_rules_for("service") + store.active_rules_for("dependency")
+def retrieve_service_context(
+    store,
+    repository: Path,
+    task: DevelopmentTask | None = None,
+    *,
+    scope: KnowledgeScope | None = None,
+):
+    rules = (
+        store.active_rules_for("service", scope=scope)
+        + store.active_rules_for("dependency", scope=scope)
+    )
     structure = retrieve_artifact_structure(rules, "service")
     imports = list(structure.imports)
     dependencies = []

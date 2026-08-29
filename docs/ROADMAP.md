@@ -336,9 +336,29 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-Remaining slice:
+### Milestone 5E — Bounded coding-context assembly — COMPLETE
 
-- Rule + example + dependency `CodingContext` assembly
+Delivered:
+
+- Provider-neutral production assembly boundary for structured and semantic stores
+- Scope-filtered artifact and dependency rule retrieval
+- Rule-authoritative structure and dependency constraints
+- Semantically ranked, bounded representative examples
+- Preservation of task-aware unresolved dependency candidates
+- Fail-closed cross-scope structured-rule validation before semantic retrieval
+- Service and controller artifact-family routing with unsupported-family rejection
+
+Verification:
+
+```text
+RED: coding-context assembly module import failed during focused test collection
+focused assembly/retrieval/regression tests: 18 passed, 1 warning
+complete suite: 204 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
 
 ## Milestone 6 — Production LangGraph development engine
 
