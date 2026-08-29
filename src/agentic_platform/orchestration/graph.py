@@ -10,6 +10,10 @@ from typing import Callable, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
+from agentic_platform.agents.development import (
+    ChangePlan, ChangePlanner, ChangeReview, ChangeReviewer,
+    DeterministicChangePlanner, DeterministicChangeReviewer,
+)
 from agentic_platform.domain.models import CodingContext, CommandResult, FrameworkRule, ValidationFinding, ValidationReport
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore, repository_fingerprint
 from agentic_platform.framework_learning.learner import FrameworkLearner
@@ -64,7 +68,9 @@ class DevelopmentState(TypedDict, total=False):
     specification: DevelopmentTask
     framework_rules: list[FrameworkRule]
     coding_context: CodingContext
+    plan: ChangePlan
     generated_change: GeneratedChange
+    review: ChangeReview
     generated_files: list[str]
     build_result: CommandResult
     test_result: CommandResult
@@ -105,6 +111,8 @@ class DevelopmentService:
         self,
         *,
         model_factory: Callable[[], CodingModel] = DeterministicPythonCodingModel,
+        planner_factory: Callable[[], ChangePlanner] = DeterministicChangePlanner,
+        reviewer_factory: Callable[[], ChangeReviewer] = DeterministicChangeReviewer,
         build_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         test_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         validator: Callable[[Path, list[FrameworkRule]], ValidationReport] = validate_service,
@@ -115,7 +123,11 @@ class DevelopmentService:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
         self._model_factory = model_factory
+        self._planner_factory = planner_factory
+        self._reviewer_factory = reviewer_factory
         self._model: CodingModel | None = None
+        self._planner: ChangePlanner | None = None
+        self._reviewer: ChangeReviewer | None = None
         self._build_runner = build_runner
         self._test_runner = test_runner
         self._validator = validator
@@ -151,6 +163,8 @@ class DevelopmentService:
         stage = workspace.resolve() / ".development-staging" / uuid.uuid4().hex
         staging_authorization: _StagingAuthorization | None = None
         self._model = None
+        self._planner = None
+        self._reviewer = None
         try:
             shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
             lifecycle = _register_staging_copy(workspace, repository, stage)
@@ -164,6 +178,8 @@ class DevelopmentService:
             })
         finally:
             self._model = None
+            self._planner = None
+            self._reviewer = None
             _revoke_staging_authorization(staging_authorization)
             shutil.rmtree(stage, ignore_errors=True)
             parent = stage.parent
@@ -219,25 +235,29 @@ class DevelopmentService:
     def build_graph(self):
         graph = StateGraph(DevelopmentState)
         for name, node in (
-            ("parse", self._parse_task), ("retrieve", self._retrieve), ("generate", self._generate),
+            ("parse", self._parse_task), ("retrieve", self._retrieve), ("plan", self._plan),
+            ("generate", self._generate),
             ("repair", self._repair), ("apply", self._apply), ("build", self._build),
             ("build_failure", self._record_build_failure), ("tests", self._tests),
             ("test_failure", self._record_test_failure), ("compliance", self._compliance),
-            ("compliance_failure", self._record_compliance_failure), ("publish", self._publish), ("final", self._final),
+            ("compliance_failure", self._record_compliance_failure), ("review", self._review),
+            ("publish", self._publish), ("final", self._final),
         ):
             graph.add_node(name, node)
         graph.add_edge(START, "parse")
         graph.add_conditional_edges("parse", self._after_parse, {"retrieve": "retrieve", "final": "final"})
-        graph.add_conditional_edges("retrieve", self._after_retrieve, {"generate": "generate", "final": "final"})
+        graph.add_conditional_edges("retrieve", self._after_retrieve, {"plan": "plan", "final": "final"})
+        graph.add_conditional_edges("plan", self._after_plan, {"generate": "generate", "final": "final"})
         graph.add_conditional_edges("generate", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_conditional_edges("apply", self._after_apply, {"build": "build", "final": "final"})
         graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
         graph.add_conditional_edges("build_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("tests", self._after_tests, {"compliance": "compliance", "failure": "test_failure"})
         graph.add_conditional_edges("test_failure", self._after_failure, {"repair": "repair", "final": "final"})
-        graph.add_conditional_edges("compliance", self._after_compliance, {"publish": "publish", "failure": "compliance_failure"})
+        graph.add_conditional_edges("compliance", self._after_compliance, {"review": "review", "failure": "compliance_failure"})
         graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("repair", self._after_model, {"apply": "apply", "final": "final"})
+        graph.add_conditional_edges("review", self._after_review, {"publish": "publish", "final": "final"})
         graph.add_edge("publish", "final")
         graph.add_edge("final", END)
         return graph.compile()
@@ -288,6 +308,23 @@ class DevelopmentService:
 
     @staticmethod
     def _after_retrieve(state: DevelopmentState) -> str:
+        return "final" if state.get("status") == "failed" else "plan"
+
+    def _plan(self, state: DevelopmentState) -> dict[str, object]:
+        try:
+            if self._planner is None:
+                self._planner = self._planner_factory()
+            plan = self._planner.plan(
+                state["specification"], state["coding_context"], tuple(state["framework_rules"])
+            )
+            if not isinstance(plan, ChangePlan):
+                raise TypeError("planner returned an invalid plan")
+        except Exception:
+            return {"status": "failed", **self._event(state, "change_planning_failed")}
+        return {"plan": plan, **self._event(state, "change_planned")}
+
+    @staticmethod
+    def _after_plan(state: DevelopmentState) -> str:
         return "final" if state.get("status") == "failed" else "generate"
 
     def _generate(self, state: DevelopmentState) -> dict[str, object]:
@@ -370,7 +407,25 @@ class DevelopmentService:
 
     @staticmethod
     def _after_compliance(state: DevelopmentState) -> str:
-        return "publish" if state["validation_report"].passed else "failure"
+        return "review" if state["validation_report"].passed else "failure"
+
+    def _review(self, state: DevelopmentState) -> dict[str, object]:
+        try:
+            if self._reviewer is None:
+                self._reviewer = self._reviewer_factory()
+            review = self._reviewer.review(
+                state["plan"], state["generated_change"], state["validation_report"]
+            )
+            if not isinstance(review, ChangeReview):
+                raise TypeError("reviewer returned an invalid review")
+        except Exception:
+            return {"status": "failed", **self._event(state, "change_review_failed")}
+        event = "change_review_approved" if review.approved else "change_review_rejected"
+        return {"review": review, **self._event(state, event)}
+
+    @staticmethod
+    def _after_review(state: DevelopmentState) -> str:
+        return "publish" if state.get("review") and state["review"].approved else "final"
 
     def _publish(self, state: DevelopmentState) -> dict[str, object]:
         try:

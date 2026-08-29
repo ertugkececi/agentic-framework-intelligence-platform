@@ -362,7 +362,32 @@ security pattern scan: 0 match
 
 ## Milestone 6 — Production LangGraph development engine
 
-- Explicit planning and review nodes
+### Milestone 6A — Explicit planning and review nodes — COMPLETE
+
+Delivered:
+
+- Immutable, provider-neutral change plan and review contracts
+- Explicit LangGraph planning node between bounded retrieval and implementation
+- Rule-kind and normalized target-path provenance in the minimum change plan
+- Explicit review node after deterministic build, test and compliance gates
+- Fail-closed planner/reviewer adapter failures and rejected reviews
+- Review rejection proof that the customer repository remains byte-identical
+- Backward-compatible deterministic planner and reviewer defaults
+
+Verification:
+
+```text
+RED: development planning/review module import failed during focused test collection
+focused planning/review tests: 4 passed, 1 warning
+complete suite: 208 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+Remaining slices:
+
 - Bounded repair loops
 - Persistent checkpoints
 - Human approval interrupts
