@@ -11,8 +11,12 @@ from urllib.request import Request, urlopen
 from uuid import NAMESPACE_URL, uuid5
 
 from agentic_platform.domain.models import KnowledgeScope
-from agentic_platform.retrieval.semantic_chunks import SemanticChunk, _validate_relative_posix_path
-from agentic_platform.retrieval.semantic_store import VectorEntry
+from agentic_platform.retrieval.semantic_chunks import (
+    ChunkKind,
+    SemanticChunk,
+    _validate_relative_posix_path,
+)
+from agentic_platform.retrieval.semantic_store import SemanticMatch, VectorEntry
 
 
 class QdrantTransport(Protocol):
@@ -108,16 +112,7 @@ class QdrantSemanticStore:
     def upsert(self, entries: Sequence[VectorEntry]) -> None:
         points: list[dict[str, Any]] = []
         for chunk, raw_vector in entries:
-            vector = list(raw_vector)
-            if len(vector) != self._vector_size:
-                raise ValueError(f"vector dimension must be {self._vector_size}")
-            if any(
-                isinstance(value, bool)
-                or not isinstance(value, (int, float))
-                or not math.isfinite(value)
-                for value in vector
-            ):
-                raise ValueError("vector values must be finite numbers")
+            vector = self._validate_vector(raw_vector)
             payload = {
                 **chunk.filter_metadata,
                 "chunk_id": chunk.chunk_id,
@@ -137,8 +132,78 @@ class QdrantSemanticStore:
                 "PUT", f"{self._collection_path}/points?wait=true", {"points": points}
             )
 
-    def delete_source(self, scope: KnowledgeScope, source_path: str) -> None:
-        _validate_relative_posix_path(source_path)
+    def search(
+        self,
+        scope: KnowledgeScope,
+        query_vector: Sequence[float],
+        *,
+        limit: int,
+        kind: ChunkKind | str | None = None,
+    ) -> tuple[SemanticMatch, ...]:
+        """Return only payloads validated against the complete requested scope."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        vector = self._validate_vector(query_vector)
+        normalized_kind: ChunkKind | None = None
+        if kind is not None:
+            try:
+                normalized_kind = ChunkKind(kind)
+            except ValueError as exc:
+                raise ValueError("kind must be source or document") from exc
+        must = self._scope_filter(scope)
+        if normalized_kind is not None:
+            must.append({"key": "kind", "match": {"value": normalized_kind.value}})
+        response = self._transport.request(
+            "POST",
+            f"{self._collection_path}/points/search",
+            {
+                "vector": vector,
+                "filter": {"must": must},
+                "limit": limit,
+                "with_payload": True,
+                "with_vector": False,
+            },
+        )
+        results = response.get("result")
+        if not isinstance(results, list):
+            raise RuntimeError("Qdrant search response is malformed")
+        matches: list[SemanticMatch] = []
+        for result in results:
+            try:
+                if not isinstance(result, Mapping):
+                    raise ValueError
+                score = result["score"]
+                payload = result["payload"]
+                if (
+                    isinstance(score, bool)
+                    or not isinstance(score, (int, float))
+                    or not math.isfinite(score)
+                    or not isinstance(payload, Mapping)
+                ):
+                    raise ValueError
+                chunk = self._chunk_from_payload(payload, scope)
+                if normalized_kind is not None and chunk.kind is not normalized_kind:
+                    raise ValueError
+            except (KeyError, TypeError, ValueError):
+                raise RuntimeError("Qdrant search response is malformed or outside scope") from None
+            matches.append(SemanticMatch(chunk=chunk, score=float(score)))
+        return tuple(matches)
+
+    def _validate_vector(self, raw_vector: Sequence[float]) -> list[float]:
+        vector = list(raw_vector)
+        if len(vector) != self._vector_size:
+            raise ValueError(f"vector dimension must be {self._vector_size}")
+        if any(
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in vector
+        ):
+            raise ValueError("vector values must be finite numbers")
+        return vector
+
+    @staticmethod
+    def _scope_filter(scope: KnowledgeScope) -> list[dict[str, Any]]:
         must: list[dict[str, Any]] = [
             {"key": key, "match": {"value": value}}
             for key, value in zip(
@@ -151,6 +216,37 @@ class QdrantSemanticStore:
             must.append({"is_null": {"key": "module_id"}})
         else:
             must.append({"key": "module_id", "match": {"value": scope.module_id}})
+        return must
+
+    @staticmethod
+    def _chunk_from_payload(payload: Mapping[str, Any], scope: KnowledgeScope) -> SemanticChunk:
+        expected_scope = {
+            "customer_id": scope.customer_id,
+            "framework_id": scope.framework_id,
+            "framework_version_id": scope.framework_version_id,
+            "project_id": scope.project_id,
+            "module_id": scope.module_id,
+        }
+        if any(payload.get(key) != value for key, value in expected_scope.items()):
+            raise ValueError("payload scope mismatch")
+        chunk = SemanticChunk.create(
+            scope=scope,
+            source_path=payload["source_path"],
+            kind=payload["kind"],
+            content=payload["content"],
+            start_line=payload["start_line"],
+            end_line=payload["end_line"],
+            repository_revision=payload["repository_revision"],
+            language_id=payload.get("language_id"),
+            symbol=payload.get("symbol"),
+        )
+        if payload.get("chunk_id") != chunk.chunk_id or payload.get("content_hash") != chunk.content_hash:
+            raise ValueError("payload identity mismatch")
+        return chunk
+
+    def delete_source(self, scope: KnowledgeScope, source_path: str) -> None:
+        _validate_relative_posix_path(source_path)
+        must = self._scope_filter(scope)
         must.append({"key": "source_path", "match": {"value": source_path}})
         self._transport.request(
             "POST",

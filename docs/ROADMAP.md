@@ -288,9 +288,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 5C — Metadata-filtered semantic retrieval — COMPLETE
+
+Delivered:
+
+- Provider-neutral typed semantic match and search contract
+- Qdrant similarity search with mandatory Customer → Framework → Framework Version → Project → optional Module filters
+- Optional source/document kind filtering
+- Query dimension, finite-value and positive-limit validation before transport
+- Null-safe module isolation
+- Typed semantic chunk reconstruction with content-addressed identity validation
+- Fail-closed malformed, tampered and cross-scope response handling
+
+Verification:
+
+```text
+RED: SemanticMatch import failed during focused test collection
+focused Qdrant retrieval and adapter tests: 6 passed
+complete suite: 199 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining slices:
 
-- Metadata-filtered retrieval by tenant/version/project/module
 - Representative example mining
 - Rule + example + dependency `CodingContext` assembly
 
