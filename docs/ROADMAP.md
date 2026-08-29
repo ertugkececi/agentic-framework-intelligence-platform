@@ -166,12 +166,35 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 4B — PostgreSQL + JSONB production adapter — COMPLETE
+
+Delivered:
+
+- Shared typed `RuleKnowledgeStore` port for local and production adapters
+- PostgreSQL 16 schema with JSONB rule values, evidence and metadata
+- Lazy psycopg connection factory with mapping-row configuration
+- Atomic scope replacement and deterministic active-rule retrieval
+- Mandatory complete production scope for fail-closed tenant isolation
+- Scope-specific repository revision metadata with null-safe module uniqueness
+- SQLite retained as the infrastructure-free local adapter
+
+Verification:
+
+```text
+RED: PostgresKnowledgeStore module import failed
+focused PostgreSQL adapter tests: 4 passed
+focused structured-knowledge tests: 19 passed
+complete suite: 176 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 4 slices
 
-- PostgreSQL + JSONB production adapter
 - Rule evidence, conflicts, origin and review history
 - Candidate/active/rejected/superseded/deprecated lifecycle
-- SQLite retained as the local adapter while sharing the production store port
 
 ## Milestone 5 — Semantic code and documentation retrieval
 
