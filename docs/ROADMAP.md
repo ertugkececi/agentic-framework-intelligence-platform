@@ -240,7 +240,32 @@ security pattern scan: 0 match
 
 ## Milestone 5 — Semantic code and documentation retrieval
 
-- Source/document chunk model
+### Milestone 5A — Scoped source/document chunk model — COMPLETE
+
+Delivered:
+
+- Immutable source and document chunk contract
+- SHA-256 content hashes and deterministic content-addressed chunk identities
+- Mandatory Customer → Framework → Framework Version → Project → optional Module scope
+- Provider-neutral filter metadata for tenant/version-safe vector retrieval
+- Repository revision, relative POSIX path, line span, language and symbol provenance
+- Fail-closed source metadata, path and line-boundary validation
+- Cross-tenant and cross-location identity isolation
+
+Verification:
+
+```text
+RED: semantic chunk module import failed during focused test collection
+focused semantic chunk tests: 9 passed
+complete suite: 193 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+Remaining slices:
+
 - Qdrant or pgvector adapter
 - Metadata-filtered retrieval by tenant/version/project/module
 - Representative example mining
