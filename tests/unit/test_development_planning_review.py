@@ -116,3 +116,55 @@ def test_default_reviewer_rejects_unplanned_generated_paths() -> None:
 
     assert not review.approved
     assert review.reason == "unplanned target paths: app/other.py"
+
+
+class RepairAwareModel:
+    def __init__(self) -> None:
+        from agentic_platform.models.gateway import DeterministicPythonCodingModel
+        self._delegate = DeterministicPythonCodingModel()
+        self.repair_failures = []
+
+    def generate_change(self, task, context):
+        return self._delegate.generate_change(task, context)
+
+    def repair_change(self, task, context, previous_change, failure_context):
+        self.repair_failures.append(failure_context)
+        return self._delegate.repair_change(task, context, previous_change, failure_context)
+
+
+class RejectOnceReviewer:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def review(self, plan, change, report) -> ChangeReview:
+        self.calls += 1
+        if self.calls == 1:
+            return ChangeReview(False, "architecture boundary mismatch")
+        return ChangeReview(True, "repair accepted")
+
+
+def test_rejected_review_enters_bounded_repair_loop_with_review_feedback(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path)
+    FrameworkLearningService().learn(tmp_path, repository)
+    model = RepairAwareModel()
+    reviewer = RejectOnceReviewer()
+
+    result = DevelopmentService(
+        model_factory=lambda: model,
+        reviewer_factory=lambda: reviewer,
+        build_runner=_passing,
+        test_runner=_passing,
+        validator=lambda *args: ValidationReport(True),
+    ).run(tmp_path, repository, TASK, retry_budget=1, grant=poc_grant(repository))
+
+    assert result["status"] == "succeeded"
+    assert reviewer.calls == 2
+    assert result["retry_count"] == 1
+    assert len(model.repair_failures) == 1
+    assert model.repair_failures[0].stage == "review"
+    assert model.repair_failures[0].output == "architecture boundary mismatch"
+    assert "review_failed" in result["events"]
+    assert result["events"].index("change_review_rejected") < result["events"].index("change_repaired")
+    assert result["events"].index("change_repaired") < result["events"].index("change_review_approved")

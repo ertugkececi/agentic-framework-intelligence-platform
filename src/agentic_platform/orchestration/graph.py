@@ -169,13 +169,16 @@ class DevelopmentService:
             shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
             lifecycle = _register_staging_copy(workspace, repository, stage)
             staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
-            return self.build_graph().invoke({
-                "workspace": str(workspace.resolve()), "repository": str(repository),
-                "staging_repository": str(stage), "staging_authorization": staging_authorization,
-                "grant": grant, "task": task,
-                "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
-                "events": [], "status": "running",
-            })
+            return self.build_graph().invoke(
+                {
+                    "workspace": str(workspace.resolve()), "repository": str(repository),
+                    "staging_repository": str(stage), "staging_authorization": staging_authorization,
+                    "grant": grant, "task": task,
+                    "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
+                    "events": [], "status": "running",
+                },
+                {"recursion_limit": 12 + 8 * (retry_budget + 1)},
+            )
         finally:
             self._model = None
             self._planner = None
@@ -241,7 +244,7 @@ class DevelopmentService:
             ("build_failure", self._record_build_failure), ("tests", self._tests),
             ("test_failure", self._record_test_failure), ("compliance", self._compliance),
             ("compliance_failure", self._record_compliance_failure), ("review", self._review),
-            ("publish", self._publish), ("final", self._final),
+            ("review_failure", self._record_review_failure), ("publish", self._publish), ("final", self._final),
         ):
             graph.add_node(name, node)
         graph.add_edge(START, "parse")
@@ -257,7 +260,8 @@ class DevelopmentService:
         graph.add_conditional_edges("compliance", self._after_compliance, {"review": "review", "failure": "compliance_failure"})
         graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("repair", self._after_model, {"apply": "apply", "final": "final"})
-        graph.add_conditional_edges("review", self._after_review, {"publish": "publish", "final": "final"})
+        graph.add_conditional_edges("review", self._after_review, {"publish": "publish", "failure": "review_failure", "final": "final"})
+        graph.add_conditional_edges("review_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_edge("publish", "final")
         graph.add_edge("final", END)
         return graph.compile()
@@ -425,7 +429,9 @@ class DevelopmentService:
 
     @staticmethod
     def _after_review(state: DevelopmentState) -> str:
-        return "publish" if state.get("review") and state["review"].approved else "final"
+        if state.get("status") == "failed":
+            return "final"
+        return "publish" if state["review"].approved else "failure"
 
     def _publish(self, state: DevelopmentState) -> dict[str, object]:
         try:
@@ -445,6 +451,9 @@ class DevelopmentService:
     def _record_compliance_failure(self, state: DevelopmentState) -> dict[str, object]:
         report = state["validation_report"]
         return self._record_failure(state, "compliance", (), "; ".join(item.message for item in report.findings) or "compliance validation failed")
+
+    def _record_review_failure(self, state: DevelopmentState) -> dict[str, object]:
+        return self._record_failure(state, "review", (), state["review"].reason)
 
     def _record_failure(self, state: DevelopmentState, stage: str, command: tuple[str, ...], output: str) -> dict[str, object]:
         history = state.get("failure_history", ())

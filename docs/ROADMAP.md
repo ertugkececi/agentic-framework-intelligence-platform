@@ -386,9 +386,27 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 6B — Bounded review repair loop — COMPLETE
+
+Delivered:
+
+- Review rejections routed through the shared bounded repair loop
+- Typed review failure context supplied to the coding model
+- Shared retry budget across build, test, compliance and review failures
+- Redacted and size-bounded review feedback history
+- Retry-budget-derived LangGraph recursion limit that permits clean bounded exhaustion
+- Reviewer adapter failures remain fail-closed and do not enter repair
+
+Verification:
+
+```text
+RED: rejected review terminated without repair feedback
+focused planning/review and orchestration tests: 11 passed, 1 warning
+complete suite: 209 passed, 1 warning
+```
+
 Remaining slices:
 
-- Bounded repair loops
 - Persistent checkpoints
 - Human approval interrupts
 - Reproducible run identity and artifact records
