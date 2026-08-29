@@ -30,6 +30,30 @@ class RuleStatus(StrEnum):
     CANDIDATE = "candidate"
     ACTIVE = "active"
     REJECTED = "rejected"
+    SUPERSEDED = "superseded"
+    DEPRECATED = "deprecated"
+
+
+_RULE_STATUS_TRANSITIONS: Mapping[RuleStatus, frozenset[RuleStatus]] = {
+    RuleStatus.CANDIDATE: frozenset({RuleStatus.ACTIVE, RuleStatus.REJECTED}),
+    RuleStatus.ACTIVE: frozenset({RuleStatus.SUPERSEDED, RuleStatus.DEPRECATED}),
+    RuleStatus.REJECTED: frozenset(),
+    RuleStatus.SUPERSEDED: frozenset(),
+    RuleStatus.DEPRECATED: frozenset(),
+}
+
+
+def validate_rule_status_transition(current: RuleStatus, target: RuleStatus) -> None:
+    """Reject invalid or reversible rule lifecycle transitions."""
+    current = RuleStatus(current)
+    target = RuleStatus(target)
+    allowed = _RULE_STATUS_TRANSITIONS[current]
+    if target not in allowed:
+        if not allowed:
+            raise ValueError(f"{current.value} is a terminal rule status")
+        raise ValueError(
+            f"invalid rule status transition: {current.value} -> {target.value}"
+        )
 
 
 @dataclass(frozen=True)
@@ -131,6 +155,18 @@ class FrameworkRule:
     framework_version: str = "1.0"
     discovered_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     scope: KnowledgeScope | None = None
+
+    def __post_init__(self) -> None:
+        try:
+            status = RuleStatus(self.status)
+        except ValueError as exc:
+            raise ValueError("status must be a recognized rule lifecycle status") from exc
+        try:
+            origin = RuleOrigin(self.origin)
+        except ValueError as exc:
+            raise ValueError("origin must be a recognized rule origin") from exc
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "origin", origin)
 
 
 @dataclass(frozen=True)

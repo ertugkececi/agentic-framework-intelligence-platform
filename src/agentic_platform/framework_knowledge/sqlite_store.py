@@ -9,7 +9,10 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleReview
+from agentic_platform.domain.models import (
+    Evidence, FrameworkRule, KnowledgeScope, RuleReview, RuleStatus,
+    validate_rule_status_transition,
+)
 
 
 def repository_fingerprint(repository: Path) -> str:
@@ -138,6 +141,41 @@ class SQLiteKnowledgeStore:
         ).fetchall()
         return [self._to_review(row) for row in rows]
 
+    def transition_rule_status(
+        self,
+        rule_kind: str,
+        expected_value: str,
+        target_status: RuleStatus,
+        *,
+        scope: KnowledgeScope | None = None,
+    ) -> FrameworkRule:
+        """Atomically move one scoped rule through the irreversible lifecycle."""
+        if scope is None:
+            raise ValueError("rule status transitions require an explicit scope")
+        try:
+            target = RuleStatus(target_status)
+        except ValueError as exc:
+            raise ValueError("target_status must be a recognized rule lifecycle status") from exc
+        with self.connection:
+            rows = self.connection.execute(
+                """SELECT * FROM framework_rule
+                WHERE kind = ? AND expected_value = ?
+                  AND customer_id = ? AND framework_id = ? AND framework_version_id = ?
+                  AND project_id = ? AND module_id IS ?""",
+                (rule_kind, expected_value, *scope.hierarchy),
+            ).fetchall()
+            if not rows:
+                raise LookupError("rule not found in knowledge scope")
+            if len(rows) != 1:
+                raise LookupError("rule identity is ambiguous in knowledge scope")
+            rule = self._to_rule(rows[0])
+            validate_rule_status_transition(rule.status, target)
+            self.connection.execute(
+                "UPDATE framework_rule SET status = ? WHERE id = ?",
+                (target.value, rows[0]["id"]),
+            )
+        return replace(rule, status=target)
+
     def active_rules_for(
         self,
         prefix: str,
@@ -183,7 +221,8 @@ class SQLiteKnowledgeStore:
             support_count=row["support_count"], conflict_count=row["conflict_count"],
             origin=row["origin"], status=row["status"], framework_version=row["framework_version"],
             evidence=tuple(Evidence(**item) for item in json.loads(row["evidence_json"])),
-            metadata=json.loads(row["metadata_json"]), scope=scope,
+            metadata=json.loads(row["metadata_json"]),
+            discovered_at=datetime.fromisoformat(row["discovered_at"]), scope=scope,
         )
 
     @staticmethod

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from agentic_platform.domain.models import FrameworkRule, KnowledgeScope, RuleReview
+from agentic_platform.domain.models import FrameworkRule, KnowledgeScope, RuleReview, RuleStatus
 
 
 class RuleKnowledgeStore(Protocol):
@@ -23,6 +23,15 @@ class RuleKnowledgeStore(Protocol):
         *,
         scope: KnowledgeScope | None = None,
     ) -> list[FrameworkRule]: ...
+
+    def transition_rule_status(
+        self,
+        rule_kind: str,
+        expected_value: str,
+        target_status: RuleStatus,
+        *,
+        scope: KnowledgeScope | None = None,
+    ) -> FrameworkRule: ...
 
     def append_rule_review(self, review: RuleReview) -> None: ...
 

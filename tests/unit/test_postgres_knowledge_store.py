@@ -140,3 +140,35 @@ def test_postgres_active_rule_query_round_trips_jsonb_and_scope() -> None:
     assert result == [rule]
     with pytest.raises(ValueError, match="explicit scope"):
         store.active_rules_for("service")
+
+def test_postgres_rule_transition_is_atomic_and_scope_filtered() -> None:
+    scope = _scope()
+    rule = _rule(scope)
+    row = {
+        "id": 7, "kind": rule.kind, "expected_value": rule.expected_value,
+        "confidence": rule.confidence, "support_count": rule.support_count,
+        "conflict_count": rule.conflict_count,
+        "evidence_json": [item.__dict__ for item in rule.evidence],
+        "metadata_json": dict(rule.metadata), "origin": str(rule.origin),
+        "status": "candidate", "framework_version": rule.framework_version,
+        "discovered_at": rule.discovered_at, "customer_id": scope.customer_id,
+        "framework_id": scope.framework_id,
+        "framework_version_id": scope.framework_version_id,
+        "project_id": scope.project_id, "module_id": scope.module_id,
+    }
+    connection = RecordingConnection([row])
+    store = PostgresKnowledgeStore(connection)
+
+    transitioned = store.transition_rule_status(
+        rule.kind, rule.expected_value, RuleStatus.ACTIVE, scope=scope
+    )
+
+    select_call, update_call = connection.cursor_instance.calls[-2:]
+    assert "expected_value = %s::jsonb" in select_call[0]
+    assert select_call[1] == (rule.kind, json.dumps(rule.expected_value), *scope.hierarchy)
+    assert "UPDATE framework_rule SET status" in update_call[0]
+    assert update_call[1] == ("active", 7)
+    assert transitioned.status is RuleStatus.ACTIVE
+
+    with pytest.raises(ValueError, match="explicit scope"):
+        store.transition_rule_status(rule.kind, rule.expected_value, RuleStatus.ACTIVE)

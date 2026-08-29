@@ -214,9 +214,29 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-### Remaining Milestone 4 slices
+### Milestone 4D — Rule lifecycle — COMPLETE
 
-- Candidate/active/rejected/superseded/deprecated lifecycle
+Delivered:
+
+- Complete candidate/active/rejected/superseded/deprecated status vocabulary
+- Typed rule status and origin normalization at the domain boundary
+- Explicit irreversible lifecycle transition policy with terminal-state protection
+- Atomic, scope-isolated transitions in SQLite and PostgreSQL adapters
+- PostgreSQL row locking for concurrent lifecycle decisions
+- Fail-closed missing, ambiguous and unscoped rule transitions
+- Shared lifecycle transition operation on the structured knowledge store port
+
+Verification:
+
+```text
+RED: lifecycle vocabulary and transition store operation tests failed
+focused lifecycle/structured-store tests: 17 passed
+complete suite: 184 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
 
 ## Milestone 5 — Semantic code and documentation retrieval
 

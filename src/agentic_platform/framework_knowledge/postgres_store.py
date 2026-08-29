@@ -6,7 +6,10 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleReview
+from agentic_platform.domain.models import (
+    Evidence, FrameworkRule, KnowledgeScope, RuleReview, RuleStatus,
+    validate_rule_status_transition,
+)
 
 
 class DBAPICursor(Protocol):
@@ -189,6 +192,50 @@ class PostgresKnowledgeStore:
                 (rule_kind, json.dumps(expected_value), *scope.hierarchy),
             )
             return [self._to_review(row) for row in cursor.fetchall()]
+
+    def transition_rule_status(
+        self,
+        rule_kind: str,
+        expected_value: str,
+        target_status: RuleStatus,
+        *,
+        scope: KnowledgeScope | None = None,
+    ) -> FrameworkRule:
+        """Atomically move one production rule through the scoped lifecycle."""
+        if scope is None:
+            raise ValueError("rule status transitions require an explicit scope")
+        try:
+            target = RuleStatus(target_status)
+        except ValueError as exc:
+            raise ValueError("target_status must be a recognized rule lifecycle status") from exc
+        with self.connection:
+            with self.connection.cursor() as cursor:
+                cursor.execute(
+                    """SELECT id, kind, expected_value, confidence, support_count,
+                              conflict_count, origin, status, framework_version,
+                              discovered_at, evidence_json, metadata_json,
+                              customer_id, framework_id, framework_version_id,
+                              project_id, module_id
+                       FROM framework_rule
+                       WHERE kind = %s AND expected_value = %s::jsonb
+                         AND customer_id = %s AND framework_id = %s
+                         AND framework_version_id = %s AND project_id = %s
+                         AND module_id IS NOT DISTINCT FROM %s
+                       FOR UPDATE""",
+                    (rule_kind, json.dumps(expected_value), *scope.hierarchy),
+                )
+                rows = cursor.fetchall()
+                if not rows:
+                    raise LookupError("rule not found in knowledge scope")
+                if len(rows) != 1:
+                    raise LookupError("rule identity is ambiguous in knowledge scope")
+                rule = self._to_rule(rows[0])
+                validate_rule_status_transition(rule.status, target)
+                cursor.execute(
+                    "UPDATE framework_rule SET status = %s WHERE id = %s",
+                    (target.value, rows[0]["id"]),
+                )
+        return replace(rule, status=target)
 
     def active_rules_for(
         self,
