@@ -717,9 +717,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 8B — Native local/air-gapped inference adapter — COMPLETE
+
+Delivered:
+
+- Native non-streaming local chat API adapter behind the provider-neutral coding-model port
+- Credential-free settings for on-premise and air-gapped inference endpoints
+- Deterministic JSON-mode generation with bounded output tokens and timeout
+- Shared provider-neutral generation and bounded repair prompts
+- Typed response translation into the shared generated-change contract
+- Exact-origin egress enforcement before local inference transport access
+- Composition-root routing alongside OpenAI-compatible and native Anthropic adapters
+
+Verification:
+
+```text
+RED: local inference adapter module import failed during focused test collection
+focused local/OpenAI/Anthropic/egress tests: 24 passed
+complete suite: 269 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining:
 
-- Local/air-gapped inference
 - Task-based model routing
 - OpenTelemetry traces, metrics and audit replay
 - Kubernetes deployment with PostgreSQL and Qdrant

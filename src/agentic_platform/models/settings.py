@@ -92,3 +92,36 @@ class AnthropicSettings:
     @property
     def messages_url(self) -> str:
         return self.base_url.rstrip("/") + "/messages"
+
+
+@dataclass(frozen=True)
+class LocalInferenceSettings:
+    """Connection settings for an on-premise native chat endpoint.
+
+    This credential-free contract targets local or air-gapped inference servers
+    exposing the non-streaming /api/chat JSON API.
+    """
+
+    base_url: str
+    model: str
+    timeout_seconds: float = 60.0
+    max_tokens: int = 4096
+
+    def __post_init__(self) -> None:
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("base_url must not contain credentials")
+        if parsed.query or parsed.fragment:
+            raise ValueError("base_url must not contain a query or fragment")
+        if not self.model.strip():
+            raise ValueError("model must not be empty")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        if isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+
+    @property
+    def chat_url(self) -> str:
+        return self.base_url.rstrip("/") + "/api/chat"
