@@ -1,7 +1,6 @@
 """Offline framework learning and safe online LangGraph development workflows."""
 from __future__ import annotations
 
-import re
 import shutil
 import uuid
 from functools import partial
@@ -31,6 +30,7 @@ from agentic_platform.retrieval.context import (
 )
 from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
 from agentic_platform.security.sandbox import StagingSandbox
+from agentic_platform.security.secrets import SecretRedactor
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -54,16 +54,7 @@ from agentic_platform.validation.compliance import validate_service
 
 DEFAULT_RETRY_BUDGET = 2
 DEFAULT_MAX_FAILURE_OUTPUT = 2_000
-_SECRET_ASSIGNMENT = re.compile(
-    r"(?i)\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\s*[=:]\s*)([^\s,;]+)",
-)
-_SECRET_JSON_ASSIGNMENT = re.compile(
-    r'(?i)(")([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*)("\s*:\s*)(")(?:\\.|[^"\\])*(")',
-)
-_SECRET_PATTERNS = (
-    re.compile(r"(?i)\bBearer\s+[^\s,;]+"),
-    re.compile(r"(?i)\bhttps?://[^\s/@:]+:[^\s/@]+@"),
-)
+_SECRET_REDACTOR = SecretRedactor()
 
 
 class DevelopmentState(TypedDict, total=False):
@@ -699,14 +690,7 @@ class DevelopmentService:
 
     @staticmethod
     def _redact(output: str) -> str:
-        redacted = _SECRET_JSON_ASSIGNMENT.sub(
-            lambda match: f'{match.group(1)}{match.group(2)}{match.group(3)}{match.group(4)}[REDACTED]{match.group(5)}',
-            output,
-        )
-        redacted = _SECRET_ASSIGNMENT.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
-        for pattern in _SECRET_PATTERNS:
-            redacted = pattern.sub("[REDACTED]", redacted)
-        return redacted
+        return _SECRET_REDACTOR.redact(output)
 
     @staticmethod
     def _after_failure(state: DevelopmentState) -> str:

@@ -619,9 +619,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7G — Secret-reference and redaction foundation — COMPLETE
+
+Delivered:
+
+- Immutable identifier-only secret references for external providers
+- Strict provider, path, key and optional version validation
+- Shared redactor for explicitly resolved values and common credential structures
+- Deterministic longest-value-first masking without retaining mutable caller input
+- Centralized development failure, review and validation redaction
+- Backward-compatible orchestration behavior with focused regression coverage
+
+Verification:
+
+```text
+RED: secret-reference/redaction module import failed during focused test collection
+focused secret/redaction and safe-execution tests: 28 passed, 1 warning
+complete suite: 248 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Secret references, egress policy and redaction
+- Secret resolution boundary and egress policy enforcement
 - Resource and time quotas
 
 ## Milestone 8 — Model gateway, observability and deployment
