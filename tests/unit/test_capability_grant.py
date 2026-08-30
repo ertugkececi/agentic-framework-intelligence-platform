@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
 
 
 def test_grant_snapshots_mutable_capabilities_and_canonicalizes_repository(tmp_path: Path) -> None:
@@ -10,7 +10,7 @@ def test_grant_snapshots_mutable_capabilities_and_canonicalizes_repository(tmp_p
     repository.mkdir()
     capabilities = {Capability.READ_REPOSITORY}
 
-    grant = CapabilityGrant(capabilities, repository / ".." / "repository")
+    grant = CapabilityGrant(capabilities, repository / ".." / "repository", local_principal("local"))
     capabilities.add(Capability.WRITE_REPOSITORY)
 
     assert grant.allowed == frozenset({Capability.READ_REPOSITORY})
@@ -22,4 +22,4 @@ def test_grant_snapshots_mutable_capabilities_and_canonicalizes_repository(tmp_p
 
 def test_grant_rejects_untyped_capabilities(tmp_path: Path) -> None:
     with pytest.raises(TypeError, match="Capability"):
-        CapabilityGrant(frozenset({"read_repository"}), tmp_path)
+        CapabilityGrant(frozenset({"read_repository"}), tmp_path, local_principal("local"))

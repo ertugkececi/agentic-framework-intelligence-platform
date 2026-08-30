@@ -9,12 +9,12 @@ from agentic_platform.domain.models import KnowledgeScope
 from agentic_platform.retrieval.qdrant_store import QdrantSemanticStore
 from agentic_platform.retrieval.semantic_chunks import ChunkKind, SemanticChunk
 from agentic_platform.retrieval.semantic_store import SemanticMatch, SemanticVectorStore
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
 
 
 def database_grant(*capabilities: Capability) -> CapabilityGrant:
     allowed = capabilities or (Capability.DATABASE_READ, Capability.DATABASE_WRITE)
-    return CapabilityGrant(frozenset(allowed), Path.cwd())
+    return CapabilityGrant(frozenset(allowed), Path.cwd(), local_principal("tenant"))
 
 
 class SearchTransport:

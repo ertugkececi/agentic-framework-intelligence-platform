@@ -20,19 +20,80 @@ class Capability(StrEnum):
     GIT_PUSH = "git_push"
 
 
+class Role(StrEnum):
+    """Product roles whose permissions are expanded only at grant issuance."""
+
+    VIEWER = "viewer"
+    DEVELOPER = "developer"
+    KNOWLEDGE_ADMIN = "knowledge_admin"
+    PLATFORM_ADMIN = "platform_admin"
+
+
+_ROLE_CAPABILITIES: dict[Role, frozenset[Capability]] = {
+    Role.VIEWER: frozenset({Capability.READ_REPOSITORY, Capability.DATABASE_READ}),
+    Role.DEVELOPER: frozenset({
+        Capability.READ_REPOSITORY,
+        Capability.WRITE_REPOSITORY,
+        Capability.RUN_BUILD,
+        Capability.RUN_TEST,
+        Capability.STATIC_ANALYSIS,
+    }),
+    Role.KNOWLEDGE_ADMIN: frozenset({Capability.DATABASE_READ, Capability.DATABASE_WRITE}),
+    Role.PLATFORM_ADMIN: frozenset(Capability),
+}
+
+
+@dataclass(frozen=True)
+class Principal:
+    """Immutable authenticated identity bound to exactly one tenant."""
+
+    subject_id: str
+    tenant_id: str
+    roles: frozenset[Role]
+
+    def __post_init__(self) -> None:
+        for name, value in (("subject_id", self.subject_id), ("tenant_id", self.tenant_id)):
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be a non-empty string")
+        if not all(isinstance(role, Role) for role in self.roles):
+            raise TypeError("roles entries must be Role values")
+        object.__setattr__(self, "roles", frozenset(self.roles))
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return frozenset(
+            capability
+            for role in self.roles
+            for capability in _ROLE_CAPABILITIES[role]
+        )
+
+
+def local_principal(tenant_id: str = "local") -> Principal:
+    """Explicit trusted identity for infrastructure-free local/test adapters."""
+    return Principal("local-operator", tenant_id, frozenset({Role.PLATFORM_ADMIN}))
+
+
 @dataclass(frozen=True)
 class CapabilityGrant:
     """Immutable permissions bound to one canonical customer repository root."""
 
     allowed: frozenset[Capability]
     repository_root: Path
+    principal: Principal
 
     def __post_init__(self) -> None:
+        if not isinstance(self.principal, Principal):
+            raise TypeError("principal must be a Principal")
         if not isinstance(self.repository_root, Path):
             raise TypeError("repository_root must be a Path")
         if not all(isinstance(capability, Capability) for capability in self.allowed):
             raise TypeError("allowed entries must be Capability values")
-        object.__setattr__(self, "allowed", frozenset(self.allowed))
+        allowed = frozenset(self.allowed)
+        unauthorized = allowed - self.principal.capabilities
+        if unauthorized:
+            denied = ", ".join(sorted(capability.value for capability in unauthorized))
+            raise PermissionError(f"RBAC denied capabilities: {denied}")
+        object.__setattr__(self, "allowed", allowed)
         object.__setattr__(self, "repository_root", self.repository_root.resolve())
 
     def require(self, capability: Capability) -> None:
@@ -42,6 +103,11 @@ class CapabilityGrant:
     def require_repository(self, repository: Path) -> None:
         if self.repository_root != repository.resolve():
             raise PermissionError("Capability grant repository mismatch")
+
+    def require_scope(self, scope: object) -> None:
+        customer_id = getattr(scope, "customer_id", None)
+        if not isinstance(customer_id, str) or customer_id != self.principal.tenant_id:
+            raise PermissionError("Capability grant tenant mismatch")
 
 
 @dataclass(frozen=True)
@@ -151,4 +217,5 @@ def poc_grant(repository: Path) -> CapabilityGrant:
             Capability.STATIC_ANALYSIS,
         }),
         repository.resolve(),
+        local_principal(),
     )

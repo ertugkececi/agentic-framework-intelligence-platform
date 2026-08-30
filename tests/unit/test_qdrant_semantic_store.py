@@ -10,12 +10,12 @@ from agentic_platform.domain.models import KnowledgeScope
 from agentic_platform.retrieval.qdrant_store import QdrantSemanticStore
 from agentic_platform.retrieval.semantic_chunks import SemanticChunk
 from agentic_platform.retrieval.semantic_store import SemanticVectorStore
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
 
 
 def database_grant(*capabilities: Capability) -> CapabilityGrant:
     allowed = capabilities or (Capability.DATABASE_READ, Capability.DATABASE_WRITE)
-    return CapabilityGrant(frozenset(allowed), Path.cwd())
+    return CapabilityGrant(frozenset(allowed), Path.cwd(), local_principal("tenant"))
 
 
 class RecordingTransport:
@@ -161,3 +161,26 @@ def test_qdrant_url_factory_denies_invalid_or_read_only_grant_before_transport_c
             collection_name="chunks", vector_size=3,
         )
     assert constructed == []
+
+
+def test_qdrant_denies_cross_tenant_scope_before_transport_access() -> None:
+    transport = RecordingTransport()
+    store = QdrantSemanticStore(
+        transport, grant=database_grant(), collection_name="chunks", vector_size=3
+    )
+    calls_after_schema = len(transport.calls)
+    other_scope = KnowledgeScope("other", "framework", "2.0", "project", "api")
+    other_chunk = SemanticChunk.create(
+        scope=other_scope, source_path="src/worker.py", kind="source",
+        content="pass\n", start_line=1, end_line=1,
+        repository_revision="revision-7", language_id="python", symbol="worker",
+    )
+
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.upsert([(other_chunk, (0.1, 0.2, 0.3))])
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.delete_source(other_scope, "src/worker.py")
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.search(other_scope, (0.1, 0.2, 0.3), limit=1)
+
+    assert len(transport.calls) == calls_after_schema

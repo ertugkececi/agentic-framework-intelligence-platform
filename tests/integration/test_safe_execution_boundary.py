@@ -14,7 +14,7 @@ from agentic_platform.models.gateway import FailureContext
 import agentic_platform.models.openai_compatible as openai_compatible
 from agentic_platform.orchestration.graph import DevelopmentService, FrameworkLearningService
 import agentic_platform.security.policy as policy
-from agentic_platform.security.policy import Capability, CapabilityGrant, _create_staging_authorization
+from agentic_platform.security.policy import Capability, CapabilityGrant, _create_staging_authorization, local_principal
 from agentic_platform.tasks.types import FileChange, GeneratedChange
 from agentic_platform.tools.changes import ChangeValidationError, apply_change
 from agentic_platform.tools.repository_tools import run_build, run_tests
@@ -39,7 +39,7 @@ def _hashes(root: Path) -> dict[str, str]:
 
 
 def _grant(repository: Path, *capabilities: Capability) -> CapabilityGrant:
-    return CapabilityGrant(frozenset(capabilities), repository.resolve())
+    return CapabilityGrant(frozenset(capabilities), repository.resolve(), local_principal("local"))
 
 
 def _full_grant(repository: Path) -> CapabilityGrant:

@@ -595,9 +595,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7F — Tenant-bound RBAC grants — COMPLETE
+
+Delivered:
+
+- Immutable authenticated principals bound to exactly one tenant
+- Typed viewer, developer, knowledge-admin and platform-admin roles
+- Fail-closed role-to-capability authorization at grant construction
+- Mandatory principal identity on every capability grant
+- Tenant-scope checks before PostgreSQL transactions and Qdrant transport access
+- Cross-tenant structured and semantic write/read denial
+- Explicit local operator identity retained for infrastructure-free adapters
+
+Verification:
+
+```text
+RED: Principal and Role imports failed; production adapters accepted cross-tenant scopes
+focused tenant/RBAC and production-adapter tests: 30 passed
+complete suite: 245 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Tenant boundaries and RBAC
 - Secret references, egress policy and redaction
 - Resource and time quotas
 

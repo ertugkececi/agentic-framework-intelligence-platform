@@ -17,7 +17,7 @@ from agentic_platform.domain.models import (
 )
 from agentic_platform.framework_knowledge.postgres_store import PostgresKnowledgeStore
 from agentic_platform.framework_knowledge.sqlite_store import SQLiteKnowledgeStore
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
 
 def _scope() -> KnowledgeScope:
     return KnowledgeScope("tenant", "framework", "2.0", "project", "api")
@@ -96,7 +96,8 @@ def test_postgres_review_history_serializes_jsonb_and_filters_scope() -> None:
     store = PostgresKnowledgeStore(
         connection,
         grant=CapabilityGrant(
-            frozenset({Capability.DATABASE_READ, Capability.DATABASE_WRITE}), Path.cwd()
+            frozenset({Capability.DATABASE_READ, Capability.DATABASE_WRITE}), Path.cwd(),
+            local_principal("tenant"),
         ),
     )
     review = _review(RuleReviewAction.EDIT)

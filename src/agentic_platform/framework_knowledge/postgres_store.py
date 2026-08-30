@@ -131,6 +131,7 @@ class PostgresKnowledgeStore:
         self._grant.require(Capability.DATABASE_WRITE)
         if scope is None:
             raise ValueError("PostgreSQL rule writes require an explicit scope")
+        self._grant.require_scope(scope)
         scoped_rules: list[FrameworkRule] = []
         for rule in rules:
             if rule.scope is not None and rule.scope != scope:
@@ -171,6 +172,7 @@ class PostgresKnowledgeStore:
     def append_rule_review(self, review: RuleReview) -> None:
         """Append one immutable review event within its mandatory tenant scope."""
         self._grant.require(Capability.DATABASE_WRITE)
+        self._grant.require_scope(review.scope)
         with self.connection:
             with self.connection.cursor() as cursor:
                 cursor.execute(
@@ -196,6 +198,7 @@ class PostgresKnowledgeStore:
         self, rule_kind: str, expected_value: str, *, scope: KnowledgeScope,
     ) -> list[RuleReview]:
         self._grant.require(Capability.DATABASE_READ)
+        self._grant.require_scope(scope)
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """SELECT rule_kind, expected_value, action, actor, comment,
@@ -224,6 +227,7 @@ class PostgresKnowledgeStore:
         self._grant.require(Capability.DATABASE_WRITE)
         if scope is None:
             raise ValueError("rule status transitions require an explicit scope")
+        self._grant.require_scope(scope)
         try:
             target = RuleStatus(target_status)
         except ValueError as exc:
@@ -266,6 +270,7 @@ class PostgresKnowledgeStore:
         self._grant.require(Capability.DATABASE_READ)
         if scope is None:
             raise ValueError("PostgreSQL rule retrieval requires an explicit scope")
+        self._grant.require_scope(scope)
         with self.connection.cursor() as cursor:
             cursor.execute(
                 """SELECT kind, expected_value, confidence, support_count,

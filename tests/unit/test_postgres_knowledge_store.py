@@ -7,10 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from agentic_platform.domain.models import Evidence, FrameworkRule, KnowledgeScope, RuleStatus
+from agentic_platform.domain.models import (
+    Evidence, FrameworkRule, KnowledgeScope, RuleReview, RuleReviewAction, RuleStatus,
+)
 from agentic_platform.framework_knowledge.postgres_store import PostgresKnowledgeStore
 from agentic_platform.framework_knowledge.store import RuleKnowledgeStore
-from agentic_platform.security.policy import Capability, CapabilityGrant
+from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
 
 
 class RecordingCursor:
@@ -51,7 +53,7 @@ class RecordingConnection:
 
 def _database_grant(*capabilities: Capability) -> CapabilityGrant:
     allowed = capabilities or (Capability.DATABASE_READ, Capability.DATABASE_WRITE)
-    return CapabilityGrant(frozenset(allowed), Path.cwd())
+    return CapabilityGrant(frozenset(allowed), Path.cwd(), local_principal("tenant"))
 
 
 def _scope(module: str | None = "api") -> KnowledgeScope:
@@ -224,3 +226,28 @@ def test_postgres_dsn_factory_denies_invalid_or_schema_read_only_grant_before_co
             "postgresql://database.invalid/knowledge",
             grant=_database_grant(Capability.DATABASE_READ),
         )
+
+
+def test_postgres_denies_cross_tenant_scope_before_transaction() -> None:
+    connection = RecordingConnection()
+    store = PostgresKnowledgeStore(connection, grant=_database_grant())
+    transactions_after_schema = connection.transactions
+    other = KnowledgeScope("other", "framework", "2.0", "project", "api")
+
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.replace_rules([_rule()], scope=other)
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.active_rules_for("service", scope=other)
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.rule_review_history("service.base_class", "FrameworkBase", scope=other)
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.transition_rule_status(
+            "service.base_class", "FrameworkBase", RuleStatus.REJECTED, scope=other
+        )
+    with pytest.raises(PermissionError, match="tenant mismatch"):
+        store.append_rule_review(RuleReview(
+            "service.base_class", "FrameworkBase", other,
+            RuleReviewAction.REJECT, "reviewer",
+        ))
+
+    assert connection.transactions == transactions_after_schema

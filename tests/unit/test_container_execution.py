@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from agentic_platform.orchestration.graph import DevelopmentService, FrameworkLearningService
-from agentic_platform.security.policy import Capability, CapabilityGrant, _StagingAuthorization
+from agentic_platform.security.policy import Capability, CapabilityGrant, _StagingAuthorization, local_principal
 from agentic_platform.tools.container_execution import ContainerExecutionConfig, ContainerCommandRunner
 
 
@@ -15,7 +15,7 @@ IMAGE = "registry.example.invalid/platform/python@sha256:" + "a" * 64
 
 
 def _grant(repository: Path, *capabilities: Capability) -> CapabilityGrant:
-    return CapabilityGrant(frozenset(capabilities), repository)
+    return CapabilityGrant(frozenset(capabilities), repository, local_principal("local"))
 
 
 def test_build_runs_as_a_fixed_networkless_resource_bounded_container(

@@ -123,6 +123,8 @@ class QdrantSemanticStore:
 
     def upsert(self, entries: Sequence[VectorEntry]) -> None:
         self._grant.require(Capability.DATABASE_WRITE)
+        for chunk, _ in entries:
+            self._grant.require_scope(chunk.scope)
         points: list[dict[str, Any]] = []
         for chunk, raw_vector in entries:
             vector = self._validate_vector(raw_vector)
@@ -155,6 +157,7 @@ class QdrantSemanticStore:
     ) -> tuple[SemanticMatch, ...]:
         """Return only payloads validated against the complete requested scope."""
         self._grant.require(Capability.DATABASE_READ)
+        self._grant.require_scope(scope)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ValueError("limit must be a positive integer")
         vector = self._validate_vector(query_vector)
@@ -260,6 +263,7 @@ class QdrantSemanticStore:
 
     def delete_source(self, scope: KnowledgeScope, source_path: str) -> None:
         self._grant.require(Capability.DATABASE_WRITE)
+        self._grant.require_scope(scope)
         _validate_relative_posix_path(source_path)
         must = self._scope_filter(scope)
         must.append({"key": "source_path", "match": {"value": source_path}})
