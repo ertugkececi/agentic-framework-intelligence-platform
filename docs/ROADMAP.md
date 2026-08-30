@@ -787,9 +787,34 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 8E — On-prem Kubernetes runtime foundation — COMPLETE
+
+Delivered:
+
+- Dedicated customer namespace and Kustomize deployment base
+- Cluster-private, health-checked API Deployment and Service
+- Persistent workspace, PostgreSQL 16 and Qdrant StatefulSets
+- Kubernetes Secret references only; no credential values in manifests
+- Non-root pods, dropped Linux capabilities and bounded resources
+- Default-deny networking with explicit API, structured-store and vector-store paths
+- Customer-registry image override and secret-provisioning runbook
+
+Verification:
+
+```text
+RED: deployment base was absent; 4 focused manifest tests failed
+focused Kubernetes manifest tests: 4 passed
+complete suite: 279 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining:
 
-- Kubernetes deployment with PostgreSQL and Qdrant
+- Production API composition wiring for PostgreSQL, Qdrant and PostgreSQL checkpoints
+- Kubernetes observability stack and production overlays
 
 ## Global completion gates
 

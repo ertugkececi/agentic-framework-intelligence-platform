@@ -1,0 +1,11 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: framework-intelligence
+resources:
+  - namespace.json
+  - platform-config.json
+  - platform-workspace.json
+  - platform.json
+  - postgres.json
+  - qdrant.json
+  - network-policy.json
