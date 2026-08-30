@@ -17,6 +17,7 @@ from agentic_platform.retrieval.semantic_chunks import (
     _validate_relative_posix_path,
 )
 from agentic_platform.retrieval.semantic_store import SemanticMatch, VectorEntry
+from agentic_platform.security.policy import Capability, CapabilityGrant
 
 
 class QdrantTransport(Protocol):
@@ -69,18 +70,23 @@ class QdrantSemanticStore:
         self,
         transport: QdrantTransport,
         *,
+        grant: CapabilityGrant,
         collection_name: str,
         vector_size: int,
         initialize_collection: bool = True,
     ) -> None:
+        if not isinstance(grant, CapabilityGrant):
+            raise TypeError("grant must be a CapabilityGrant")
         if not isinstance(collection_name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", collection_name):
             raise ValueError("collection_name must contain only letters, digits, underscore, or hyphen")
         if not isinstance(vector_size, int) or isinstance(vector_size, bool) or vector_size < 1:
             raise ValueError("vector_size must be a positive integer")
         self._transport = transport
+        self._grant = grant
         self._collection_name = collection_name
         self._vector_size = vector_size
         if initialize_collection:
+            self._grant.require(Capability.DATABASE_WRITE)
             self._transport.request(
                 "PUT",
                 self._collection_path,
@@ -92,14 +98,20 @@ class QdrantSemanticStore:
         cls,
         base_url: str,
         *,
+        grant: CapabilityGrant,
         collection_name: str,
         vector_size: int,
         api_key: str | None = None,
         timeout: float = 30.0,
         initialize_collection: bool = True,
     ) -> "QdrantSemanticStore":
+        if not isinstance(grant, CapabilityGrant):
+            raise TypeError("grant must be a CapabilityGrant")
+        if initialize_collection:
+            grant.require(Capability.DATABASE_WRITE)
         return cls(
             QdrantHttpTransport(base_url, api_key=api_key, timeout=timeout),
+            grant=grant,
             collection_name=collection_name,
             vector_size=vector_size,
             initialize_collection=initialize_collection,
@@ -110,6 +122,7 @@ class QdrantSemanticStore:
         return f"/collections/{self._collection_name}"
 
     def upsert(self, entries: Sequence[VectorEntry]) -> None:
+        self._grant.require(Capability.DATABASE_WRITE)
         points: list[dict[str, Any]] = []
         for chunk, raw_vector in entries:
             vector = self._validate_vector(raw_vector)
@@ -141,6 +154,7 @@ class QdrantSemanticStore:
         kind: ChunkKind | str | None = None,
     ) -> tuple[SemanticMatch, ...]:
         """Return only payloads validated against the complete requested scope."""
+        self._grant.require(Capability.DATABASE_READ)
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ValueError("limit must be a positive integer")
         vector = self._validate_vector(query_vector)
@@ -245,6 +259,7 @@ class QdrantSemanticStore:
         return chunk
 
     def delete_source(self, scope: KnowledgeScope, source_path: str) -> None:
+        self._grant.require(Capability.DATABASE_WRITE)
         _validate_relative_posix_path(source_path)
         must = self._scope_filter(scope)
         must.append({"key": "source_path", "match": {"value": source_path}})

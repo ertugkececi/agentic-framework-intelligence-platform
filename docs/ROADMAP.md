@@ -523,9 +523,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7C — Qdrant production adapter capability enforcement — COMPLETE
+
+Delivered:
+
+- Mandatory typed capability grants for Qdrant adapter construction
+- Vector-database write authorization before collection initialization
+- Independent database-read authorization for semantic search
+- Database-write authorization for vector upsert and scoped source deletion
+- URL factory denial before transport construction for invalid or insufficient grants
+- Fail-closed denial before validation, transport calls or network access
+
+Verification:
+
+```text
+RED: Qdrant adapter rejected the grant contract; unauthorized initialization and operations reached the transport boundary
+focused Qdrant capability/store/retrieval tests: 9 passed
+complete suite: 222 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Capability enforcement for remaining production adapter operations (Qdrant)
 - Sandboxed worktrees/containers
 - Tenant boundaries and RBAC
 - Secret references, egress policy and redaction

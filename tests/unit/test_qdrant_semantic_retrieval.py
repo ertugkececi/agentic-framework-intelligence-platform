@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -8,6 +9,12 @@ from agentic_platform.domain.models import KnowledgeScope
 from agentic_platform.retrieval.qdrant_store import QdrantSemanticStore
 from agentic_platform.retrieval.semantic_chunks import ChunkKind, SemanticChunk
 from agentic_platform.retrieval.semantic_store import SemanticMatch, SemanticVectorStore
+from agentic_platform.security.policy import Capability, CapabilityGrant
+
+
+def database_grant(*capabilities: Capability) -> CapabilityGrant:
+    allowed = capabilities or (Capability.DATABASE_READ, Capability.DATABASE_WRITE)
+    return CapabilityGrant(frozenset(allowed), Path.cwd())
 
 
 class SearchTransport:
@@ -42,7 +49,7 @@ def payload(module: str | None = "api") -> dict[str, Any]:
 def test_search_uses_complete_scope_and_kind_filter_and_returns_typed_matches() -> None:
     transport = SearchTransport({"result": [{"score": 0.91, "payload": payload()}]})
     store: SemanticVectorStore = QdrantSemanticStore(
-        transport, collection_name="chunks", vector_size=3, initialize_collection=False
+        transport, grant=database_grant(), collection_name="chunks", vector_size=3, initialize_collection=False
     )
 
     matches = store.search(scope(), (0.1, 0.2, 0.3), limit=4, kind=ChunkKind.SOURCE)
@@ -67,7 +74,7 @@ def test_search_uses_complete_scope_and_kind_filter_and_returns_typed_matches() 
 def test_search_without_module_uses_null_filter_and_validates_inputs_before_request() -> None:
     transport = SearchTransport()
     store = QdrantSemanticStore(
-        transport, collection_name="chunks", vector_size=2, initialize_collection=False
+        transport, grant=database_grant(), collection_name="chunks", vector_size=2, initialize_collection=False
     )
     assert store.search(scope(None), (0.2, 0.8), limit=1) == ()
     assert {"is_null": {"key": "module_id"}} in transport.calls[-1][2]["filter"]["must"]
@@ -89,7 +96,7 @@ def test_search_fails_closed_for_malformed_or_cross_scope_results() -> None:
         {"result": [{"score": 1.0, "payload": {**payload(), "content_hash": "0" * 64}}]},
     ):
         store = QdrantSemanticStore(
-            SearchTransport(response), collection_name="chunks", vector_size=2,
+            SearchTransport(response), grant=database_grant(), collection_name="chunks", vector_size=2,
             initialize_collection=False,
         )
         with pytest.raises(RuntimeError, match="Qdrant search response"):
