@@ -953,9 +953,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 findings
 ~~~
 
+### Milestone 8L — Durable Grafana observability frontend — COMPLETE
+
+Delivered:
+
+- Cluster-private Grafana StatefulSet with persistent local state
+- Provisioned, immutable Prometheus, Tempo and Loki data sources
+- Secret-backed administrator bootstrap with anonymous access and self-registration disabled
+- Digest-pinned multi-architecture image with non-root, read-only runtime
+- Dedicated backend-only egress and matching read ingress policies
+- No API, PostgreSQL, Qdrant or external network access
+
+Verification:
+
+~~~text
+RED: Grafana resource, provisioning, persistence, and network-policy assertions failed
+focused Kubernetes deployment/observability tests: 14 passed
+complete suite: 296 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Durable Grafana observability frontend
 - Production Kubernetes overlays
 
 

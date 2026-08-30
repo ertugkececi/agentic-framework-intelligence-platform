@@ -13,3 +13,4 @@ resources:
   - prometheus.json
   - tempo.json
   - loki.json
+  - grafana.json

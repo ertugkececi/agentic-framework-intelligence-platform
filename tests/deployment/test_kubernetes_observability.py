@@ -188,7 +188,7 @@ def test_tempo_durably_receives_collector_traces() -> None:
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
 
 
-def test_tempo_network_access_is_collector_only() -> None:
+def test_tempo_ingestion_access_is_collector_only() -> None:
     manifests = _manifests()
     policies = {
         name: manifest
@@ -232,21 +232,19 @@ def test_tempo_network_access_is_collector_only() -> None:
         },
     ]
     tempo_ingress = policies["tempo-access"]["spec"]
-    assert tempo_ingress["ingress"] == [
-        {
-            "from": [
-                {
-                    "podSelector": {
-                        "matchLabels": {
-                            "app.kubernetes.io/name": "otel-collector",
-                            "app.kubernetes.io/component": "observability",
-                        }
+    assert tempo_ingress["ingress"][0] == {
+        "from": [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "otel-collector",
+                        "app.kubernetes.io/component": "observability",
                     }
                 }
-            ],
-            "ports": [{"protocol": "TCP", "port": 4317}],
-        }
-    ]
+            }
+        ],
+        "ports": [{"protocol": "TCP", "port": 4317}],
+    }
 
 
 def test_loki_durably_receives_collector_logs() -> None:
@@ -283,7 +281,7 @@ def test_loki_durably_receives_collector_logs() -> None:
     assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
 
 
-def test_loki_network_access_is_collector_only() -> None:
+def test_loki_ingestion_access_is_collector_only() -> None:
     manifests = _manifests()
     policies = {
         name: manifest
@@ -305,18 +303,105 @@ def test_loki_network_access_is_collector_only() -> None:
         "ports": [{"protocol": "TCP", "port": 3100}],
     } in collector_egress
     loki_ingress = policies["loki-access"]["spec"]
-    assert loki_ingress["ingress"] == [
-        {
-            "from": [
-                {
-                    "podSelector": {
-                        "matchLabels": {
-                            "app.kubernetes.io/name": "otel-collector",
-                            "app.kubernetes.io/component": "observability",
-                        }
+    assert loki_ingress["ingress"][0] == {
+        "from": [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "otel-collector",
+                        "app.kubernetes.io/component": "observability",
                     }
                 }
-            ],
-            "ports": [{"protocol": "TCP", "port": 3100}],
-        }
+            }
+        ],
+        "ports": [{"protocol": "TCP", "port": 3100}],
+    }
+
+
+def test_grafana_provisions_durable_private_observability_frontend() -> None:
+    manifests = _manifests()
+    datasources = manifests[("ConfigMap", "grafana-provisioning")]["data"][
+        "datasources.yaml"
     ]
+    stateful_set = manifests[("StatefulSet", "grafana")]
+    service = manifests[("Service", "grafana")]
+    pod = stateful_set["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+    env = {item["name"]: item for item in container["env"]}
+
+    assert "url: http://prometheus:9090" in datasources
+    assert "url: http://tempo:3200" in datasources
+    assert "url: http://loki:3100" in datasources
+    assert "uid: prometheus" in datasources
+    assert "uid: tempo" in datasources
+    assert "uid: loki" in datasources
+    assert service["spec"]["type"] == "ClusterIP"
+    assert service["spec"]["ports"] == [
+        {"name": "http", "port": 3000, "targetPort": "http"}
+    ]
+    assert stateful_set["spec"]["volumeClaimTemplates"][0]["spec"][
+        "resources"
+    ]["requests"]["storage"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert "@sha256:" in container["image"]
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/api/health",
+        "port": "http",
+    }
+    assert container["resources"]["requests"]
+    assert container["resources"]["limits"]
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+    assert env["GF_SECURITY_ADMIN_USER"]["valueFrom"]["secretKeyRef"] == {
+        "name": "agentic-platform-secrets",
+        "key": "grafana-admin-user",
+    }
+    assert env["GF_SECURITY_ADMIN_PASSWORD"]["valueFrom"]["secretKeyRef"] == {
+        "name": "agentic-platform-secrets",
+        "key": "grafana-admin-password",
+    }
+    assert env["GF_USERS_ALLOW_SIGN_UP"]["value"] == "false"
+    assert env["GF_AUTH_ANONYMOUS_ENABLED"]["value"] == "false"
+
+
+def test_grafana_network_access_is_backend_read_only() -> None:
+    manifests = _manifests()
+    policies = {
+        name: manifest
+        for (kind, name), manifest in manifests.items()
+        if kind == "NetworkPolicy"
+    }
+    grafana_egress = policies["grafana-egress"]["spec"]["egress"]
+    backend_routes = {
+        (
+            rule["to"][0]["podSelector"]["matchLabels"]["app.kubernetes.io/name"],
+            rule["ports"][0]["port"],
+        )
+        for rule in grafana_egress
+        if "podSelector" in rule["to"][0]
+    }
+    assert backend_routes == {
+        ("prometheus", 9090),
+        ("tempo", 3200),
+        ("loki", 3100),
+    }
+    assert {port["port"] for port in grafana_egress[0]["ports"]} == {53}
+    assert all(
+        route not in backend_routes
+        for route in (("agentic-platform", 8000), ("postgres", 5432), ("qdrant", 6333))
+    )
+
+    for policy_name, port in (
+        ("prometheus-access", 9090),
+        ("tempo-access", 3200),
+        ("loki-access", 3100),
+    ):
+        assert any(
+            rule.get("from", [{}])[0].get("podSelector", {}).get(
+                "matchLabels", {}
+            ).get("app.kubernetes.io/name") == "grafana"
+            and {item["port"] for item in rule.get("ports", [])} == {port}
+            for rule in policies[policy_name]["spec"]["ingress"]
+        )
