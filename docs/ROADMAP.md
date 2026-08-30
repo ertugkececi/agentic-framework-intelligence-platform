@@ -691,7 +691,7 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-## Milestone 8 — Model gateway, observability and deployment
+## Milestone 8 — Model gateway, observability and deployment — COMPLETE
 
 ### Milestone 8A — Native Anthropic production model adapter — COMPLETE
 
@@ -976,9 +976,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 findings
 ~~~
 
+### Milestone 8M — Fail-closed production Kubernetes overlay — COMPLETE
+
+Delivered:
+
+- Production Kustomize overlay inheriting the complete on-prem base
+- Immutable API image digest contract with intentionally non-routable bootstrap registry
+- Secrets Store CSI Driver integration with a read-only runtime mount
+- HashiCorp Vault provider metadata with identifier-only secret references
+- Synchronized API, PostgreSQL and Grafana secret-key contract without committed values
+- Operator runbook for verified image promotion, server-side dry-run and deployment
+
+Verification:
+
+~~~text
+RED: production overlay, Vault provider and CSI mount files were absent; 3 focused tests failed
+focused production/deployment/observability tests: 17 passed
+kustomize v5.8.1 production render: PASS
+complete suite: 299 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Production Kubernetes overlays
+- None — the accepted target architecture is delivered.
 
 
 ## Global completion gates

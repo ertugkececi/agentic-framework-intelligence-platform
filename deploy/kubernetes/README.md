@@ -17,7 +17,7 @@ state, disables anonymous access and self-registration, and can egress only to t
 backends. Its cluster-private service must be exposed through a customer-approved
 Ingress, service mesh, or `kubectl port-forward` path.
 
-Provision the referenced secret outside Git before applying the base:
+For local evaluation, provision the referenced secret outside Git before applying the base:
 
 ```sh
 kubectl -n framework-intelligence create secret generic agentic-platform-secrets \
@@ -35,4 +35,35 @@ kustomize edit set image agentic-framework-intelligence-platform=registry.local/
 
 Do not commit rendered Secrets or registry credentials. The collector and Grafana
 images are pinned to verified multi-architecture manifest digests.
-Production overlays must use an immutable image digest and a CSI/Vault-backed secret provider.
+## Production overlay
+
+`../overlays/production` inherits the complete base, pins the API image by digest,
+and replaces literal Secret provisioning with the Secrets Store CSI Driver and
+the HashiCorp Vault provider. The checked-in `registry.example.invalid` image is
+intentionally non-routable: promotion must fail closed until an operator replaces
+both the registry and digest with the verified customer image.
+
+Prerequisites:
+
+- Secrets Store CSI Driver with Kubernetes Secret synchronization enabled
+- HashiCorp Vault CSI provider
+- TLS-reachable Vault service at the configured `vaultAddress`
+- Vault Kubernetes auth role `framework-intelligence` authorized only for
+  `secret/data/framework-intelligence/runtime`
+- The five keys declared in `secret-provider.json`
+
+Promote and render from a clean checkout without committing credentials:
+
+```sh
+cd deploy/overlays/production
+kustomize edit set image \
+  agentic-framework-intelligence-platform=registry.customer.local/agentic-platform@sha256:<verified-digest>
+kustomize build . > /tmp/agentic-platform-production.yaml
+kubectl apply --server-side --dry-run=server -f /tmp/agentic-platform-production.yaml
+kubectl apply --server-side -f /tmp/agentic-platform-production.yaml
+```
+
+The CSI volume is read-only. Vault values are synchronized into the existing
+`agentic-platform-secrets` contract so no credential value appears in Kustomize,
+source control, pod arguments, or ConfigMaps. Adjust Vault address, role and path
+as deployment metadata; never replace identifier fields with resolved values.

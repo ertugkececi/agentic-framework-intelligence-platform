@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: framework-intelligence
+resources:
+  - ../../kubernetes
+  - secret-provider.json
+patches:
+  - path: platform-csi-patch.json
+images:
+  - name: agentic-framework-intelligence-platform
+    newName: registry.example.invalid/agentic-platform
+    digest: sha256:8f2f17b27d0e30d54f004560a614f742f7d67c082f61f51ef97b82448b7b4816

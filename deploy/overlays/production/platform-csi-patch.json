@@ -1,0 +1,38 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "name": "agentic-platform",
+    "namespace": "framework-intelligence"
+  },
+  "spec": {
+    "template": {
+      "spec": {
+        "containers": [
+          {
+            "name": "api",
+            "volumeMounts": [
+              {
+                "name": "runtime-secrets",
+                "mountPath": "/mnt/runtime-secrets",
+                "readOnly": true
+              }
+            ]
+          }
+        ],
+        "volumes": [
+          {
+            "name": "runtime-secrets",
+            "csi": {
+              "driver": "secrets-store.csi.k8s.io",
+              "readOnly": true,
+              "volumeAttributes": {
+                "secretProviderClass": "agentic-platform-vault"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}
