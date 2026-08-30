@@ -398,6 +398,24 @@
                 "port": 4317
               }
             ]
+          },
+          {
+            "to": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "loki",
+                    "app.kubernetes.io/component": "logs"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 3100
+              }
+            ]
           }
         ]
       }
@@ -435,6 +453,45 @@
               {
                 "protocol": "TCP",
                 "port": 4317
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "loki-access",
+        "namespace": "framework-intelligence"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "loki",
+            "app.kubernetes.io/component": "logs"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/component": "observability"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 3100
               }
             ]
           }

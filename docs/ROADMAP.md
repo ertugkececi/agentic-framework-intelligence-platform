@@ -930,9 +930,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 findings
 ~~~
 
+### Milestone 8K — Durable Loki logs backend — COMPLETE
+
+Delivered:
+
+- Cluster-private Loki StatefulSet with persistent filesystem-backed TSDB storage
+- Fourteen-day log retention with compactor-managed deletion and bounded resources
+- OpenTelemetry Collector OTLP/HTTP log export to the namespace-local Loki endpoint
+- Digest-pinned multi-architecture Loki image with non-root, read-only runtime
+- Dedicated DNS and Loki-only collector egress with matching ingestion ingress
+- Default-deny preservation with no API, database or external network access
+
+Verification:
+
+~~~text
+RED: Loki resource, durable log export, and network-policy assertions failed
+focused Kubernetes deployment/observability tests: 12 passed
+complete suite: 294 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Durable Loki/Grafana observability backends
+- Durable Grafana observability frontend
 - Production Kubernetes overlays
 
 

@@ -10,7 +10,7 @@
         "namespace": "framework-intelligence"
       },
       "data": {
-        "config.yaml": "receivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_mib: 384\n  batch:\n    timeout: 5s\nexporters:\n  debug:\n    verbosity: basic\n  prometheus:\n    endpoint: 0.0.0.0:8889\n  otlp/tempo:\n    endpoint: tempo:4317\n    tls:\n      insecure: true\nextensions:\n  health_check:\n    endpoint: 0.0.0.0:13133\nservice:\n  extensions: [health_check]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlp/tempo]\n    metrics:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [prometheus]\n"
+        "config.yaml": "receivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_mib: 384\n  batch:\n    timeout: 5s\nexporters:\n  debug:\n    verbosity: basic\n  prometheus:\n    endpoint: 0.0.0.0:8889\n  otlp/tempo:\n    endpoint: tempo:4317\n    tls:\n      insecure: true\n  otlphttp/loki:\n    endpoint: http://loki:3100/otlp\nextensions:\n  health_check:\n    endpoint: 0.0.0.0:13133\nservice:\n  extensions: [health_check]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlp/tempo]\n    metrics:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [prometheus]\n    logs:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [otlphttp/loki]\n"
       }
     },
     {

@@ -12,3 +12,4 @@ resources:
   - observability.json
   - prometheus.json
   - tempo.json
+  - loki.json

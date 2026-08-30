@@ -216,7 +216,20 @@ def test_tempo_network_access_is_collector_only() -> None:
                 }
             ],
             "ports": [{"protocol": "TCP", "port": 4317}],
-        }
+        },
+        {
+            "to": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "loki",
+                            "app.kubernetes.io/component": "logs",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 3100}],
+        },
     ]
     tempo_ingress = policies["tempo-access"]["spec"]
     assert tempo_ingress["ingress"] == [
@@ -232,5 +245,78 @@ def test_tempo_network_access_is_collector_only() -> None:
                 }
             ],
             "ports": [{"protocol": "TCP", "port": 4317}],
+        }
+    ]
+
+
+def test_loki_durably_receives_collector_logs() -> None:
+    manifests = _manifests()
+    collector_config = manifests[("ConfigMap", "otel-collector-config")]["data"][
+        "config.yaml"
+    ]
+    loki_config = manifests[("ConfigMap", "loki-config")]["data"]["loki.yaml"]
+    stateful_set = manifests[("StatefulSet", "loki")]
+    service = manifests[("Service", "loki")]
+    pod = stateful_set["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+
+    assert "endpoint: http://loki:3100/otlp" in collector_config
+    assert "exporters: [otlphttp/loki]" in collector_config
+    assert "retention_period: 336h" in loki_config
+    assert "retention_enabled: true" in loki_config
+    assert service["spec"]["type"] == "ClusterIP"
+    assert service["spec"]["ports"][0]["port"] == 3100
+    assert stateful_set["spec"]["volumeClaimTemplates"][0]["spec"][
+        "resources"
+    ]["requests"]["storage"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert "@sha256:" in container["image"]
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "http",
+    }
+    assert container["resources"]["requests"]
+    assert container["resources"]["limits"]
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+
+def test_loki_network_access_is_collector_only() -> None:
+    manifests = _manifests()
+    policies = {
+        name: manifest
+        for (kind, name), manifest in manifests.items()
+        if kind == "NetworkPolicy"
+    }
+    collector_egress = policies["otel-collector-egress"]["spec"]["egress"]
+    assert {
+        "to": [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "loki",
+                        "app.kubernetes.io/component": "logs",
+                    }
+                }
+            }
+        ],
+        "ports": [{"protocol": "TCP", "port": 3100}],
+    } in collector_egress
+    loki_ingress = policies["loki-access"]["spec"]
+    assert loki_ingress["ingress"] == [
+        {
+            "from": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "otel-collector",
+                            "app.kubernetes.io/component": "observability",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 3100}],
         }
     ]

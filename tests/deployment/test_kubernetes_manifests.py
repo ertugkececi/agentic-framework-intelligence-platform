@@ -35,6 +35,7 @@ def test_kustomization_declares_complete_on_prem_stack() -> None:
         "observability.json",
         "prometheus.json",
         "tempo.json",
+        "loki.json",
     }
 
 
