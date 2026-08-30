@@ -8,6 +8,9 @@
   "data": {
     "QDRANT_URL": "http://qdrant:6333",
     "PRIVATE_MODE": "true",
-    "WORKSPACE_ROOT": "/workspace"
+    "WORKSPACE_ROOT": "/workspace",
+    "TENANT_ID": "customer-tenant",
+    "QDRANT_COLLECTION": "framework-knowledge",
+    "EMBEDDING_VECTOR_SIZE": "384"
   }
 }

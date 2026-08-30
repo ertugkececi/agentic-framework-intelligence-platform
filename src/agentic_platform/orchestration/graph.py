@@ -138,6 +138,7 @@ class DevelopmentService:
         clock: Callable[[], float] = time.time,
         observer: DevelopmentObserver | None = None,
         checkpoint_provider: CheckpointProvider | None = None,
+        context_retriever: Callable[[Path, DevelopmentTask], tuple[list[FrameworkRule], CodingContext]] | None = None,
     ) -> None:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
@@ -167,6 +168,9 @@ class DevelopmentService:
         self._clock = clock
         self._observer = observer
         self._checkpoint_provider = checkpoint_provider or SqliteCheckpointProvider()
+        if context_retriever is not None and not callable(context_retriever):
+            raise TypeError("context_retriever must be callable")
+        self._context_retriever = context_retriever
         if not callable(getattr(self._checkpoint_provider, "open", None)) or not callable(
             getattr(self._checkpoint_provider, "available", None)
         ):
@@ -473,27 +477,37 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "retrieve"
 
     def _retrieve(self, state: DevelopmentState) -> dict[str, object]:
-        database_path = FrameworkLearningService.database_path(Path(state["workspace"]))
-        if not database_path.exists():
-            return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
-        store = SQLiteKnowledgeStore(database_path)
-        try:
-            if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
-                return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
-            if state["specification"].artifact_type == "controller":
-                rules, context = retrieve_controller_context(
-                    store, Path(state["repository"]), state["specification"]
+        if self._context_retriever is not None:
+            try:
+                rules, context = self._context_retriever(
+                    Path(state["repository"]), state["specification"]
                 )
-            else:
-                rules, context = retrieve_service_context(
-                    store, Path(state["repository"]), state["specification"]
-                )
-        except UnsupportedInvocationRequirementError:
-            return {"status": "failed", **self._event(state, "required_invocation_unsupported")}
-        except ValueError:
-            return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
-        finally:
-            store.close()
+            except UnsupportedInvocationRequirementError:
+                return {"status": "failed", **self._event(state, "required_invocation_unsupported")}
+            except (PermissionError, RuntimeError, ValueError):
+                return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
+        else:
+            database_path = FrameworkLearningService.database_path(Path(state["workspace"]))
+            if not database_path.exists():
+                return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
+            store = SQLiteKnowledgeStore(database_path)
+            try:
+                if store.repository_fingerprint() != repository_fingerprint(Path(state["repository"])):
+                    return {"status": "failed", **self._event(state, "framework_knowledge_repository_mismatch")}
+                if state["specification"].artifact_type == "controller":
+                    rules, context = retrieve_controller_context(
+                        store, Path(state["repository"]), state["specification"]
+                    )
+                else:
+                    rules, context = retrieve_service_context(
+                        store, Path(state["repository"]), state["specification"]
+                    )
+            except UnsupportedInvocationRequirementError:
+                return {"status": "failed", **self._event(state, "required_invocation_unsupported")}
+            except ValueError:
+                return {"status": "failed", **self._event(state, "framework_knowledge_missing")}
+            finally:
+                store.close()
         if not state["specification"].operations and any(
             requirement.supported
             for dependency in context.dependencies

@@ -835,9 +835,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ~~~
 
+### Milestone 8G — Production scoped knowledge composition — COMPLETE
+
+Delivered:
+
+- Tenant-pinned production API scope contract for framework, version, project and optional module
+- PostgreSQL-backed scoped learning persistence in place of API-local SQLite knowledge
+- Injected development context retrieval boundary preserving local SQLite compatibility
+- Scoped PostgreSQL structured-rule and Qdrant semantic-example assembly for development runs
+- Request vector-dimension validation before production adapter construction
+- Read-only database grants for development and explicit write elevation only for learning
+- Repository-bound production grants and fail-closed adapter/retrieval failures
+- Kubernetes runtime settings for tenant, collection and embedding dimensions
+
+Verification:
+
+~~~text
+RED: DevelopmentService rejected the context retriever contract; API exposed no production knowledge adapters
+focused production knowledge/checkpoint/retrieval tests: 21 passed, 1 warning
+complete suite: 286 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+~~~
+
 Remaining:
 
-- Production API composition wiring for scoped PostgreSQL knowledge and Qdrant semantic retrieval
 - Kubernetes observability stack and production overlays
 
 ## Global completion gates

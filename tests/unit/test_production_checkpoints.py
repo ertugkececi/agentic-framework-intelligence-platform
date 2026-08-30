@@ -93,6 +93,8 @@ def test_api_composes_postgres_checkpoint_provider(monkeypatch) -> None:
 
     monkeypatch.setenv("API_KEY", "test-api-key")
     monkeypatch.setenv("POSTGRES_DSN", "postgresql://platform@postgres/platform")
+    monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
+    monkeypatch.setenv("TENANT_ID", "tenant")
     sys.modules.pop("agentic_platform.api", None)
     api = importlib.import_module("agentic_platform.api")
 
