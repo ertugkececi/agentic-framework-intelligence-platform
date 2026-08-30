@@ -741,9 +741,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 8C — Task-based model routing — COMPLETE
+
+Delivered:
+
+- Provider-neutral coding-model router keyed by immutable task artifact family
+- Explicit multi-family route declarations for shared specialist models
+- Deterministic generation and repair routing through the same task classification
+- Optional explicit default model for general-purpose tasks
+- Fail-closed unmatched-task behavior when no default is configured
+- Startup rejection for empty, malformed and overlapping route declarations
+
+Verification:
+
+```text
+RED: task model routing module import failed during focused test collection
+focused task-routing/model-adapter tests: 27 passed
+complete suite: 272 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining:
 
-- Task-based model routing
 - OpenTelemetry traces, metrics and audit replay
 - Kubernetes deployment with PostgreSQL and Qdrant
 
