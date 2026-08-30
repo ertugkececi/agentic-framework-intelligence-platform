@@ -7,10 +7,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from agentic_platform.orchestration.graph import (
+    DevelopmentService,
     FrameworkLearningService,
-    run_development_task,
     run_framework_learning,
 )
+from agentic_platform.orchestration.checkpoints import PostgresCheckpointProvider
+from agentic_platform.security.policy import poc_grant
 
 app = FastAPI(
     title="Agentic Framework Intelligence Platform",
@@ -22,6 +24,11 @@ ROOT = Path("/workspace").resolve()
 API_KEY = os.environ.get("API_KEY")
 if not API_KEY:
     raise RuntimeError("API_KEY environment variable is required")
+
+POSTGRES_DSN = os.environ.get("POSTGRES_DSN")
+if not POSTGRES_DSN:
+    raise RuntimeError("POSTGRES_DSN environment variable is required")
+CHECKPOINT_PROVIDER = PostgresCheckpointProvider(POSTGRES_DSN)
 
 security = HTTPBearer()
 
@@ -108,7 +115,9 @@ def develop(request: DevelopRequest):
             detail="Framework knowledge missing. Run /learn first.",
         )
 
-    state = run_development_task(work, repo, request.task)
+    state = DevelopmentService(checkpoint_provider=CHECKPOINT_PROVIDER).run(
+        work, repo, request.task, grant=poc_grant(repo)
+    )
 
     return {
         "status": state.get("status"),
@@ -122,7 +131,9 @@ def run(request: DevelopRequest):
     repo, work = paths(request.repository, request.workspace)
 
     run_framework_learning(work, repo)
-    state = run_development_task(work, repo, request.task)
+    state = DevelopmentService(checkpoint_provider=CHECKPOINT_PROVIDER).run(
+        work, repo, request.task, grant=poc_grant(repo)
+    )
 
     return {
         "status": state.get("status"),

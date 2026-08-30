@@ -811,9 +811,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 8F — Production PostgreSQL checkpoints — COMPLETE
+
+Delivered:
+
+- Provider-neutral checkpoint lifecycle injected into the development service
+- Workspace-local SQLite checkpoints retained as the default PoC adapter
+- PostgreSQL PostgresSaver production adapter with lazy dependency loading
+- Idempotent production checkpoint schema setup before graph compilation
+- API composition from the required secret-backed POSTGRES_DSN setting
+- PostgreSQL-backed run and approval-resume paths without persisting the DSN in graph state
+- Locked production checkpoint dependency and psycopg connection-pool support
+
+Verification:
+
+~~~text
+RED: production checkpoint module import failed; API composition exposed no PostgreSQL checkpoint provider
+focused checkpoint/approval tests: 8 passed, 1 warning
+complete suite: 284 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+~~~
+
 Remaining:
 
-- Production API composition wiring for PostgreSQL, Qdrant and PostgreSQL checkpoints
+- Production API composition wiring for scoped PostgreSQL knowledge and Qdrant semantic retrieval
 - Kubernetes observability stack and production overlays
 
 ## Global completion gates

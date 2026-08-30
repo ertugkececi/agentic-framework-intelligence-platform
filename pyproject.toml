@@ -13,6 +13,7 @@ dependencies = [
   "uvicorn[standard]>=0.30,<1",
   "psycopg[binary]>=3.2,<4",
   "langgraph-checkpoint-sqlite>=2,<3",
+  "langgraph-checkpoint-postgres>=2,<4",
 ]
 
 [dependency-groups]

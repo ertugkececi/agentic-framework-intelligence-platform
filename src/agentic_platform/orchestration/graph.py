@@ -8,7 +8,6 @@ from functools import partial
 from pathlib import Path
 from typing import Callable, TypedDict
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
@@ -30,6 +29,9 @@ from agentic_platform.retrieval.context import (
     retrieve_service_context,
 )
 from agentic_platform.orchestration.observability import DevelopmentObserver
+from agentic_platform.orchestration.checkpoints import (
+    CheckpointProvider, SqliteCheckpointProvider,
+)
 from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
 from agentic_platform.security.sandbox import StagingSandbox
 from agentic_platform.security.secrets import SecretRedactor
@@ -135,6 +137,7 @@ class DevelopmentService:
         max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT,
         clock: Callable[[], float] = time.time,
         observer: DevelopmentObserver | None = None,
+        checkpoint_provider: CheckpointProvider | None = None,
     ) -> None:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
@@ -163,10 +166,15 @@ class DevelopmentService:
         self._max_command_output = max_command_output
         self._clock = clock
         self._observer = observer
+        self._checkpoint_provider = checkpoint_provider or SqliteCheckpointProvider()
+        if not callable(getattr(self._checkpoint_provider, "open", None)) or not callable(
+            getattr(self._checkpoint_provider, "available", None)
+        ):
+            raise TypeError("checkpoint_provider must implement the checkpoint provider contract")
 
     @staticmethod
     def checkpoint_database_path(workspace: Path) -> Path:
-        return workspace.resolve() / "development_checkpoints.sqlite"
+        return SqliteCheckpointProvider.database_path(workspace)
 
     @staticmethod
     def run_record_database_path(workspace: Path) -> Path:
@@ -227,9 +235,7 @@ class DevelopmentService:
             lifecycle = _register_staging_copy(workspace, repository, stage)
             staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
             self._staging_authorization = staging_authorization
-            checkpoint_path = self.checkpoint_database_path(workspace)
-            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+            with self._checkpoint_provider.open(workspace) as checkpointer:
                 result = self.build_graph(checkpointer=checkpointer).invoke(
                     {
                         "run_id": run_id, "repository_revision": repository_revision,
@@ -284,8 +290,7 @@ class DevelopmentService:
         if denied:
             return {"repository": str(repository), "status": "failed", "events": [denied]}
 
-        checkpoint_path = self.checkpoint_database_path(workspace)
-        if not checkpoint_path.is_file():
+        if not self._checkpoint_provider.available(workspace):
             return {"repository": str(repository), "status": "failed", "events": ["approval_resume_not_found"]}
         config = {"configurable": {"thread_id": run_id}}
         staging_authorization: _StagingAuthorization | None = None
@@ -298,7 +303,7 @@ class DevelopmentService:
         self._approval_policy = None
         self._run_grant = grant
         try:
-            with SqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+            with self._checkpoint_provider.open(workspace) as checkpointer:
                 graph = self.build_graph(checkpointer=checkpointer)
                 state = graph.get_state(config).values
                 current_revision = RepositoryRevision.from_inventory(RepositoryScanner().scan(repository)).value
