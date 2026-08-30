@@ -478,7 +478,7 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-## Milestone 7 — Security and isolation
+## Milestone 7 — Security and isolation — COMPLETE
 
 ### Milestone 7A — Immutable capability grant foundation — COMPLETE
 
@@ -667,9 +667,29 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
-### Remaining Milestone 7 slices
+### Milestone 7I — Resource and time quotas — COMPLETE
 
-- Resource and time quotas
+Delivered:
+
+- Immutable per-run wall-clock, model-call, command-execution and generated-byte limits
+- Checkpoint-safe cumulative resource usage across generation and bounded repair attempts
+- Wall-clock enforcement before model, staging, command, compliance, review and publish boundaries
+- Model-call exhaustion before provider construction or repair invocation
+- Command quota enforcement before build/test runner invocation
+- Generated-byte rejection before staging apply, checkpoint payload retention or customer publication
+- Fail-closed quota termination with disposable staging cleanup and byte-identical customer repositories
+
+Verification:
+
+```text
+RED: development quota module import failed during focused test collection
+focused quota/approval/orchestration tests: 17 passed, 1 warning
+complete suite: 263 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
 
 ## Milestone 8 — Model gateway, observability and deployment
 

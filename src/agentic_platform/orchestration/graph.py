@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from functools import partial
 from pathlib import Path
@@ -31,6 +32,7 @@ from agentic_platform.retrieval.context import (
 from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
 from agentic_platform.security.sandbox import StagingSandbox
 from agentic_platform.security.secrets import SecretRedactor
+from agentic_platform.security.quotas import DevelopmentQuota, ResourceUsage
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -83,6 +85,9 @@ class DevelopmentState(TypedDict, total=False):
     validation_report: ValidationReport
     retry_count: int
     retry_budget: int
+    quota: DevelopmentQuota
+    resource_usage: ResourceUsage
+    quota_deadline: float
     failure_context: FailureContext
     failure_history: tuple[FailureContext, ...]
     status: str
@@ -127,6 +132,7 @@ class DevelopmentService:
         max_failure_output: int = DEFAULT_MAX_FAILURE_OUTPUT,
         command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
@@ -148,7 +154,10 @@ class DevelopmentService:
         self._validator = validator
         self._max_failure_output = max_failure_output
         self._command_timeout_seconds = command_timeout_seconds
+        if not callable(clock):
+            raise TypeError("clock must be callable")
         self._max_command_output = max_command_output
+        self._clock = clock
 
     @staticmethod
     def checkpoint_database_path(workspace: Path) -> Path:
@@ -167,10 +176,15 @@ class DevelopmentService:
         *,
         run_id: str | None = None,
         grant: CapabilityGrant | None = None,
+        quota: DevelopmentQuota | None = None,
     ) -> DevelopmentState:
         """Run against a staging copy only with a caller-supplied capability grant."""
         if retry_budget < 0:
             raise ValueError("retry_budget must not be negative")
+        quota = quota or DevelopmentQuota()
+        if not isinstance(quota, DevelopmentQuota):
+            raise TypeError("quota must be a DevelopmentQuota")
+        quota_deadline = self._clock() + quota.max_duration_seconds
         if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
             raise ValueError("run_id must be a non-empty string")
         run_id = run_id or uuid.uuid4().hex
@@ -218,6 +232,8 @@ class DevelopmentService:
                         "workspace": str(workspace.resolve()), "repository": str(repository),
                         "staging_repository": str(stage), "task": task,
                         "retry_count": 0, "retry_budget": retry_budget, "failure_history": (),
+                        "quota": quota, "resource_usage": ResourceUsage(),
+                        "quota_deadline": quota_deadline,
                         "events": [], "status": "running",
                     },
                     {
@@ -409,11 +425,11 @@ class DevelopmentService:
         graph.add_conditional_edges("approval", self._after_approval, {"generate": "generate", "final": "final"})
         graph.add_conditional_edges("generate", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_conditional_edges("apply", self._after_apply, {"build": "build", "final": "final"})
-        graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure"})
+        graph.add_conditional_edges("build", self._after_build, {"tests": "tests", "failure": "build_failure", "final": "final"})
         graph.add_conditional_edges("build_failure", self._after_failure, {"repair": "repair", "final": "final"})
-        graph.add_conditional_edges("tests", self._after_tests, {"compliance": "compliance", "failure": "test_failure"})
+        graph.add_conditional_edges("tests", self._after_tests, {"compliance": "compliance", "failure": "test_failure", "final": "final"})
         graph.add_conditional_edges("test_failure", self._after_failure, {"repair": "repair", "final": "final"})
-        graph.add_conditional_edges("compliance", self._after_compliance, {"review": "review", "failure": "compliance_failure"})
+        graph.add_conditional_edges("compliance", self._after_compliance, {"review": "review", "failure": "compliance_failure", "final": "final"})
         graph.add_conditional_edges("compliance_failure", self._after_failure, {"repair": "repair", "final": "final"})
         graph.add_conditional_edges("repair", self._after_model, {"apply": "apply", "final": "final"})
         graph.add_conditional_edges("review", self._after_review, {"publish": "publish", "failure": "review_failure", "final": "final"})
@@ -537,19 +553,54 @@ class DevelopmentService:
     def _after_approval(state: DevelopmentState) -> str:
         return "generate" if state.get("status") == "running" else "final"
 
+    def _quota_failure(self, state: DevelopmentState, resource: str) -> dict[str, object] | None:
+        if self._clock() >= state["quota_deadline"]:
+            return {"status": "failed", **self._event(state, "run_time_quota_exhausted")}
+        usage = state["resource_usage"]
+        quota = state["quota"]
+        if resource == "model" and usage.model_calls >= quota.max_model_calls:
+            return {"status": "failed", **self._event(state, "model_calls_quota_exhausted")}
+        if resource == "command" and usage.command_executions >= quota.max_command_executions:
+            return {"status": "failed", **self._event(state, "command_executions_quota_exhausted")}
+        return None
+
+    @staticmethod
+    def _generated_size(change: GeneratedChange) -> int:
+        return sum(len(item.content.encode("utf-8")) for item in change.files)
+
+    def _record_generated_change(
+        self, state: DevelopmentState, change: GeneratedChange, event: str, **extra: object,
+    ) -> dict[str, object]:
+        usage = state["resource_usage"].after_model_call(self._generated_size(change))
+        if usage.generated_bytes > state["quota"].max_generated_bytes:
+            return {
+                "resource_usage": usage, **extra, "status": "failed",
+                **self._event(state, "generated_bytes_quota_exhausted"),
+            }
+        return {
+            "generated_change": change, "resource_usage": usage, **extra,
+            **self._event(state, event),
+        }
+
     def _generate(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "model"):
+            return failure
         try:
             change = self._current_model().generate_change(state["specification"], state["coding_context"])
         except CodingModelError:
             return {"status": "failed", **self._event(state, "model_generation_failed")}
-        return {"generated_change": change, **self._event(state, "change_generated")}
+        return self._record_generated_change(state, change, "change_generated")
 
     def _repair(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "model"):
+            return failure
         try:
             change = self._current_model().repair_change(state["specification"], state["coding_context"], state["generated_change"], state["failure_context"])
         except CodingModelError:
             return {"status": "failed", **self._event(state, "model_repair_failed")}
-        return {"generated_change": change, "retry_count": state["retry_count"] + 1, **self._event(state, "change_repaired")}
+        return self._record_generated_change(
+            state, change, "change_repaired", retry_count=state["retry_count"] + 1,
+        )
 
     def _active_grant(self) -> CapabilityGrant:
         if self._run_grant is None:
@@ -571,6 +622,8 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "apply"
 
     def _apply(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "none"):
+            return failure
         try:
             files = apply_change(
                 state["generated_change"], Path(state["staging_repository"]), self._active_grant(),
@@ -584,7 +637,9 @@ class DevelopmentService:
     def _after_apply(state: DevelopmentState) -> str:
         return "final" if state.get("status") == "failed" else "build"
 
-    def _build(self, state: DevelopmentState) -> dict[str, CommandResult]:
+    def _build(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "command"):
+            return failure
         if self._container_runner is not None:
             runner = partial(
                 self._container_runner.run_build,
@@ -595,9 +650,12 @@ class DevelopmentService:
                 run_build, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
                 staging_authorization=self._active_staging_authorization(),
             )
-        return {"build_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
+        result = self._run_command(runner, Path(state["staging_repository"]), self._active_grant())
+        return {"build_result": result, "resource_usage": state["resource_usage"].after_command()}
 
-    def _tests(self, state: DevelopmentState) -> dict[str, CommandResult]:
+    def _tests(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "command"):
+            return failure
         if self._container_runner is not None:
             runner = partial(
                 self._container_runner.run_tests,
@@ -608,7 +666,8 @@ class DevelopmentService:
                 run_tests, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
                 staging_authorization=self._active_staging_authorization(),
             )
-        return {"test_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
+        result = self._run_command(runner, Path(state["staging_repository"]), self._active_grant())
+        return {"test_result": result, "resource_usage": state["resource_usage"].after_command()}
 
     def _run_command(self, runner: Callable[[Path, CapabilityGrant], CommandResult], repository: Path, grant: CapabilityGrant) -> CommandResult:
         try:
@@ -617,7 +676,9 @@ class DevelopmentService:
         except Exception as error:
             return CommandResult(False, (), self._redact(f"{type(error).__name__}: {error}"))
 
-    def _compliance(self, state: DevelopmentState) -> dict[str, ValidationReport]:
+    def _compliance(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "none"):
+            return failure
         try:
             self._active_grant().require(Capability.STATIC_ANALYSIS)
             path = Path(state["staging_repository"]) / state["generated_files"][0]
@@ -631,17 +692,25 @@ class DevelopmentService:
 
     @staticmethod
     def _after_build(state: DevelopmentState) -> str:
+        if state.get("status") == "failed":
+            return "final"
         return "tests" if state["build_result"].passed else "failure"
 
     @staticmethod
     def _after_tests(state: DevelopmentState) -> str:
+        if state.get("status") == "failed":
+            return "final"
         return "compliance" if state["test_result"].passed else "failure"
 
     @staticmethod
     def _after_compliance(state: DevelopmentState) -> str:
+        if state.get("status") == "failed":
+            return "final"
         return "review" if state["validation_report"].passed else "failure"
 
     def _review(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "none"):
+            return failure
         try:
             if self._reviewer is None:
                 self._reviewer = self._reviewer_factory()
@@ -662,6 +731,8 @@ class DevelopmentService:
         return "publish" if state["review"].approved else "failure"
 
     def _publish(self, state: DevelopmentState) -> dict[str, object]:
+        if failure := self._quota_failure(state, "none"):
+            return failure
         try:
             files = apply_change(state["generated_change"], Path(state["repository"]), self._active_grant())
         except (ChangeValidationError, OSError, PermissionError):
