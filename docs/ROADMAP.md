@@ -860,9 +860,34 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ~~~
 
+### Milestone 8H — Kubernetes OpenTelemetry collection foundation — COMPLETE
+
+Delivered:
+
+- Namespace-local OTLP gRPC/HTTP collection endpoint for platform telemetry
+- OpenTelemetry Collector pipelines with bounded memory and batch processing
+- Prometheus-compatible metrics scrape endpoint and health probes
+- Digest-pinned multi-architecture collector image with non-root, read-only runtime
+- Explicit API-to-collector egress and collector ingress network policies
+- Default-deny preservation with no service-account token or external telemetry egress
+
+Verification:
+
+~~~text
+RED: observability manifest and OTLP endpoint/network-policy assertions failed
+focused Kubernetes observability/deployment tests: 6 passed
+complete suite: 288 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Kubernetes observability stack and production overlays
+- Durable Prometheus/Tempo/Loki/Grafana observability backends
+- Production Kubernetes overlays
+
 
 ## Global completion gates
 

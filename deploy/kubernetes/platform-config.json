@@ -11,6 +11,7 @@
     "WORKSPACE_ROOT": "/workspace",
     "TENANT_ID": "customer-tenant",
     "QDRANT_COLLECTION": "framework-knowledge",
-    "EMBEDDING_VECTOR_SIZE": "384"
+    "EMBEDDING_VECTOR_SIZE": "384",
+    "OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-collector:4317"
   }
 }

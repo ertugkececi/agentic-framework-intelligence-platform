@@ -9,3 +9,4 @@ resources:
   - postgres.json
   - qdrant.json
   - network-policy.json
+  - observability.json

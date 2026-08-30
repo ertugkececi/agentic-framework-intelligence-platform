@@ -32,6 +32,7 @@ def test_kustomization_declares_complete_on_prem_stack() -> None:
         "postgres.json",
         "qdrant.json",
         "network-policy.json",
+        "observability.json",
     }
 
 

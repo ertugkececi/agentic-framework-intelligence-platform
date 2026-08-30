@@ -1,0 +1,170 @@
+{
+  "apiVersion": "v1",
+  "kind": "List",
+  "items": [
+    {
+      "apiVersion": "v1",
+      "kind": "ConfigMap",
+      "metadata": {
+        "name": "otel-collector-config",
+        "namespace": "framework-intelligence"
+      },
+      "data": {
+        "config.yaml": "receivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint: 0.0.0.0:4317\n      http:\n        endpoint: 0.0.0.0:4318\nprocessors:\n  memory_limiter:\n    check_interval: 1s\n    limit_mib: 384\n  batch:\n    timeout: 5s\nexporters:\n  debug:\n    verbosity: basic\n  prometheus:\n    endpoint: 0.0.0.0:8889\nextensions:\n  health_check:\n    endpoint: 0.0.0.0:13133\nservice:\n  extensions: [health_check]\n  pipelines:\n    traces:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [debug]\n    metrics:\n      receivers: [otlp]\n      processors: [memory_limiter, batch]\n      exporters: [prometheus]\n"
+      }
+    },
+    {
+      "apiVersion": "apps/v1",
+      "kind": "Deployment",
+      "metadata": {
+        "name": "otel-collector",
+        "namespace": "framework-intelligence",
+        "labels": {
+          "app.kubernetes.io/name": "otel-collector",
+          "app.kubernetes.io/component": "observability"
+        }
+      },
+      "spec": {
+        "replicas": 1,
+        "selector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "otel-collector",
+            "app.kubernetes.io/component": "observability"
+          }
+        },
+        "template": {
+          "metadata": {
+            "labels": {
+              "app.kubernetes.io/name": "otel-collector",
+              "app.kubernetes.io/component": "observability"
+            }
+          },
+          "spec": {
+            "automountServiceAccountToken": false,
+            "securityContext": {
+              "runAsNonRoot": true,
+              "runAsUser": 10001,
+              "runAsGroup": 10001,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "containers": [
+              {
+                "name": "otel-collector",
+                "image": "otel/opentelemetry-collector-contrib:0.116.1@sha256:d0ebf65280da2e1b1491d1b93648281afd353d4b9ea19160090303cec9a233bd",
+                "args": [
+                  "--config=/etc/otelcol-contrib/config.yaml"
+                ],
+                "ports": [
+                  {
+                    "name": "otlp-grpc",
+                    "containerPort": 4317
+                  },
+                  {
+                    "name": "otlp-http",
+                    "containerPort": 4318
+                  },
+                  {
+                    "name": "prometheus",
+                    "containerPort": 8889
+                  },
+                  {
+                    "name": "health",
+                    "containerPort": 13133
+                  }
+                ],
+                "readinessProbe": {
+                  "httpGet": {
+                    "path": "/",
+                    "port": "health"
+                  },
+                  "initialDelaySeconds": 3,
+                  "periodSeconds": 10
+                },
+                "livenessProbe": {
+                  "httpGet": {
+                    "path": "/",
+                    "port": "health"
+                  },
+                  "initialDelaySeconds": 10,
+                  "periodSeconds": 20
+                },
+                "resources": {
+                  "requests": {
+                    "cpu": "100m",
+                    "memory": "128Mi"
+                  },
+                  "limits": {
+                    "cpu": "500m",
+                    "memory": "512Mi"
+                  }
+                },
+                "securityContext": {
+                  "allowPrivilegeEscalation": false,
+                  "readOnlyRootFilesystem": true,
+                  "capabilities": {
+                    "drop": [
+                      "ALL"
+                    ]
+                  }
+                },
+                "volumeMounts": [
+                  {
+                    "name": "config",
+                    "mountPath": "/etc/otelcol-contrib",
+                    "readOnly": true
+                  }
+                ]
+              }
+            ],
+            "volumes": [
+              {
+                "name": "config",
+                "configMap": {
+                  "name": "otel-collector-config"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "apiVersion": "v1",
+      "kind": "Service",
+      "metadata": {
+        "name": "otel-collector",
+        "namespace": "framework-intelligence",
+        "labels": {
+          "app.kubernetes.io/name": "otel-collector",
+          "app.kubernetes.io/component": "observability"
+        }
+      },
+      "spec": {
+        "type": "ClusterIP",
+        "selector": {
+          "app.kubernetes.io/name": "otel-collector",
+          "app.kubernetes.io/component": "observability"
+        },
+        "ports": [
+          {
+            "name": "otlp-grpc",
+            "port": 4317,
+            "targetPort": "otlp-grpc"
+          },
+          {
+            "name": "otlp-http",
+            "port": 4318,
+            "targetPort": "otlp-http"
+          },
+          {
+            "name": "prometheus",
+            "port": 8889,
+            "targetPort": "prometheus"
+          }
+        ]
+      }
+    }
+  ]
+}

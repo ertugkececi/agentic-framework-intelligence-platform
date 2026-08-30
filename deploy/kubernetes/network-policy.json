@@ -203,6 +203,71 @@
                 "port": 6333
               }
             ]
+          },
+          {
+            "to": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "otel-collector",
+                    "app.kubernetes.io/component": "observability"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 4317
+              },
+              {
+                "protocol": "TCP",
+                "port": 4318
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "apiVersion": "networking.k8s.io/v1",
+      "kind": "NetworkPolicy",
+      "metadata": {
+        "name": "otel-collector-access",
+        "namespace": "framework-intelligence"
+      },
+      "spec": {
+        "podSelector": {
+          "matchLabels": {
+            "app.kubernetes.io/name": "otel-collector",
+            "app.kubernetes.io/component": "observability"
+          }
+        },
+        "policyTypes": [
+          "Ingress"
+        ],
+        "ingress": [
+          {
+            "from": [
+              {
+                "podSelector": {
+                  "matchLabels": {
+                    "app.kubernetes.io/name": "agentic-platform",
+                    "app.kubernetes.io/component": "api"
+                  }
+                }
+              }
+            ],
+            "ports": [
+              {
+                "protocol": "TCP",
+                "port": 4317
+              },
+              {
+                "protocol": "TCP",
+                "port": 4318
+              }
+            ]
           }
         ]
       }

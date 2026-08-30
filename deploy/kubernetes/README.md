@@ -1,8 +1,11 @@
 # On-prem Kubernetes deployment
 
-This base deploys the API, PostgreSQL 16, and Qdrant into the dedicated
+This base deploys the API, PostgreSQL 16, Qdrant, and an OpenTelemetry
+Collector into the dedicated
 `framework-intelligence` namespace. Services are cluster-private, persistent,
-and protected by default-deny network policies.
+and protected by default-deny network policies. The API exports OTLP only to the
+collector through explicit pod-to-pod network policy rules; the collector exposes
+a Prometheus scrape endpoint on port 8889 and retains no customer source payload.
 
 Provision the referenced secret outside Git before applying the base:
 
@@ -20,5 +23,6 @@ The image name is intentionally overrideable for the customer registry:
 kustomize edit set image agentic-framework-intelligence-platform=registry.local/agentic-platform@sha256:<digest>
 ```
 
-Do not commit rendered Secrets or registry credentials. Production overlays
-must use an immutable image digest and a CSI/Vault-backed secret provider.
+Do not commit rendered Secrets or registry credentials. The collector image is
+pinned to its verified multi-architecture manifest digest.
+Production overlays must use an immutable image digest and a CSI/Vault-backed secret provider.
