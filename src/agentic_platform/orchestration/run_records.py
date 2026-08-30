@@ -154,5 +154,19 @@ class DevelopmentRunRecordStore:
             raise ValueError("development run record identity mismatch")
         return record
 
+    def replay(self) -> tuple[DevelopmentRunRecord, ...]:
+        """Replay the identity-verified audit log in deterministic run order."""
+        rows = self.connection.execute(
+            "SELECT run_id, record_identity, payload_json "
+            "FROM development_run_record ORDER BY run_id"
+        ).fetchall()
+        records: list[DevelopmentRunRecord] = []
+        for run_id, identity, payload in rows:
+            record = DevelopmentRunRecord.from_json(payload)
+            if record.run_id != run_id or record.identity != identity:
+                raise ValueError("development run record identity mismatch")
+            records.append(record)
+        return tuple(records)
+
     def close(self) -> None:
         self.connection.close()

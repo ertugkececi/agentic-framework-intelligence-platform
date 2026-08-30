@@ -764,9 +764,31 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 8D — OpenTelemetry observability and audit replay — COMPLETE
+
+Delivered:
+
+- Provider-neutral development observer port with injected OpenTelemetry tracer and meter APIs
+- Bounded run outcome spans with run, model and repository identities only
+- Run counters and generated-byte histograms using the same low-cardinality-safe schema
+- Task, prompt, generated source, credential and provider-response exclusion at the telemetry boundary
+- Post-persistence development-service instrumentation with non-ambiguous exporter-failure handling
+- Deterministic identity-verified SQLite audit replay with fail-closed tamper detection
+
+Verification:
+
+```text
+RED: observability module import failed; DevelopmentService rejected the observer contract
+focused observability/run-record tests: 5 passed, 1 warning
+complete suite: 275 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 Remaining:
 
-- OpenTelemetry traces, metrics and audit replay
 - Kubernetes deployment with PostgreSQL and Qdrant
 
 ## Global completion gates

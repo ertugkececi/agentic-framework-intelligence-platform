@@ -29,6 +29,7 @@ from agentic_platform.retrieval.context import (
     retrieve_controller_context,
     retrieve_service_context,
 )
+from agentic_platform.orchestration.observability import DevelopmentObserver
 from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
 from agentic_platform.security.sandbox import StagingSandbox
 from agentic_platform.security.secrets import SecretRedactor
@@ -133,6 +134,7 @@ class DevelopmentService:
         command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
         max_command_output: int = DEFAULT_MAX_COMMAND_OUTPUT,
         clock: Callable[[], float] = time.time,
+        observer: DevelopmentObserver | None = None,
     ) -> None:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
@@ -156,8 +158,11 @@ class DevelopmentService:
         self._command_timeout_seconds = command_timeout_seconds
         if not callable(clock):
             raise TypeError("clock must be callable")
+        if observer is not None and not callable(getattr(observer, "record", None)):
+            raise TypeError("observer must implement the development observer contract")
         self._max_command_output = max_command_output
         self._clock = clock
+        self._observer = observer
 
     @staticmethod
     def checkpoint_database_path(workspace: Path) -> Path:
@@ -350,6 +355,16 @@ class DevelopmentService:
         finally:
             store.close()
         result["run_record_identity"] = record.identity
+        if self._observer is not None:
+            try:
+                self._observer.record(
+                    record, retry_count=result.get("retry_count", 0),
+                    generated_bytes=sum(artifact.size for artifact in record.artifacts),
+                )
+            except Exception:
+                # Telemetry exporters must not turn an already-published, audited
+                # customer change into an ambiguous failed operation.
+                result.setdefault("events", []).append("observability_export_failed")
 
     @staticmethod
     def _remove_staging_copy(stage: Path) -> None:
