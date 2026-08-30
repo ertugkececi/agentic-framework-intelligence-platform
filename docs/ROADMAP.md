@@ -693,7 +693,32 @@ security pattern scan: 0 match
 
 ## Milestone 8 — Model gateway, observability and deployment
 
-- Provider-neutral production model adapters
+### Milestone 8A — Native Anthropic production model adapter — COMPLETE
+
+Delivered:
+
+- Native Anthropic Messages API adapter behind the existing provider-neutral coding-model port
+- Typed provider settings with bounded output tokens, timeout and API-version validation
+- Translation of provider-neutral system/user prompts into the native Messages contract
+- Structured response translation into the shared generated-change domain contract
+- Secret-reference resolution only after exact-origin egress authorization
+- Composition-root routing between OpenAI-compatible and native Anthropic adapters
+- Dependency-free standard-library transport reuse with sanitized failure boundaries
+
+Verification:
+
+```text
+RED: Anthropic adapter module import failed during focused test collection
+focused Anthropic/OpenAI/secret-egress tests: 22 passed
+complete suite: 267 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
+Remaining:
+
 - Local/air-gapped inference
 - Task-based model routing
 - OpenTelemetry traces, metrics and audit replay

@@ -58,3 +58,37 @@ class OpenAICompatibleSettings:
             raise ValueError("CODING_MODEL_TIMEOUT_SECONDS must be a number") from error
         api_key = source.get("CODING_MODEL_API_KEY") or None
         return cls(base_url=base_url, model=model, api_key=api_key, timeout_seconds=timeout_seconds)
+
+
+@dataclass(frozen=True)
+class AnthropicSettings:
+    """Connection settings for the native Anthropic Messages API."""
+
+    base_url: str
+    model: str
+    api_key: str | None = None
+    timeout_seconds: float = 60.0
+    api_key_reference: SecretReference | None = None
+    max_tokens: int = 4096
+    api_version: str = "2023-06-01"
+
+    def __post_init__(self) -> None:
+        parsed = urlparse(self.base_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("base_url must be an absolute HTTP(S) URL")
+        if not self.model.strip():
+            raise ValueError("model must not be empty")
+        if self.timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero")
+        if isinstance(self.max_tokens, bool) or not isinstance(self.max_tokens, int) or self.max_tokens <= 0:
+            raise ValueError("max_tokens must be a positive integer")
+        if not self.api_version.strip():
+            raise ValueError("api_version must not be empty")
+        if self.api_key_reference is not None and not isinstance(self.api_key_reference, SecretReference):
+            raise TypeError("api_key_reference must be a SecretReference")
+        if self.api_key and self.api_key_reference is not None:
+            raise ValueError("api_key and api_key_reference cannot be combined")
+
+    @property
+    def messages_url(self) -> str:
+        return self.base_url.rstrip("/") + "/messages"
