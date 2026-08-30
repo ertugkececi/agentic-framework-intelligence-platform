@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -442,3 +443,36 @@ def test_colon_and_json_secret_failures_are_redacted_before_state_and_repair_mod
     assert len(model.repair_failures) == 1
     assert secret not in repr(model.repair_failures[0])
     assert model.repair_failures[0].output == result["failure_context"].output
+
+
+def test_development_service_executes_clean_git_repository_in_detached_worktree(tmp_path: Path) -> None:
+    repository = _repository(tmp_path)
+    for command in (
+        ("git", "init"),
+        ("git", "config", "user.email", "test@example.invalid"),
+        ("git", "config", "user.name", "Test User"),
+        ("git", "add", "."),
+        ("git", "commit", "-m", "fixture"),
+    ):
+        subprocess.run(command, cwd=repository, check=True, capture_output=True, text=True)
+    FrameworkLearningService().learn(tmp_path, repository)
+    observed_worktree = False
+
+    def build_runner(stage: Path, grant: CapabilityGrant) -> CommandResult:
+        nonlocal observed_worktree
+        observed_worktree = (stage / ".git").is_file()
+        return _passing()
+
+    result = DevelopmentService(
+        model_factory=lambda: ChangeModel(_change()), build_runner=build_runner,
+        test_runner=_passing, validator=lambda *args: ValidationReport(True),
+    ).run(tmp_path, repository, TASK, grant=_full_grant(repository))
+
+    assert result["status"] == "succeeded"
+    assert observed_worktree
+    assert not Path(result["staging_repository"]).exists()
+    worktrees = subprocess.run(
+        ("git", "worktree", "list", "--porcelain"), cwd=repository,
+        check=True, capture_output=True, text=True,
+    ).stdout
+    assert str(Path(result["staging_repository"])) not in worktrees

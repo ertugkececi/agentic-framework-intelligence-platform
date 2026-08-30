@@ -30,6 +30,7 @@ from agentic_platform.retrieval.context import (
     retrieve_service_context,
 )
 from agentic_platform.orchestration.run_records import DevelopmentRunRecord, DevelopmentRunRecordStore
+from agentic_platform.security.sandbox import StagingSandbox
 from agentic_platform.security.policy import (
     Capability,
     CapabilityGrant,
@@ -196,6 +197,7 @@ class DevelopmentService:
                 "status": "failed",
                 "events": ["required_invocation_operation_missing"],
             }
+        sandbox: StagingSandbox | None = None
         stage = workspace.resolve() / ".development-staging" / uuid.uuid4().hex
         staging_authorization: _StagingAuthorization | None = None
         preserve_stage = False
@@ -205,7 +207,8 @@ class DevelopmentService:
         self._approval_policy = None
         self._run_grant = grant
         try:
-            shutil.copytree(repository, stage, ignore=shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache"))
+            sandbox = StagingSandbox.create(workspace, repository, stage.name)
+            stage = sandbox.path
             lifecycle = _register_staging_copy(workspace, repository, stage)
             staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
             self._staging_authorization = staging_authorization
@@ -239,8 +242,8 @@ class DevelopmentService:
             self._run_grant = None
             self._staging_authorization = None
             _revoke_staging_authorization(staging_authorization)
-            if not preserve_stage:
-                self._remove_staging_copy(stage)
+            if not preserve_stage and sandbox is not None:
+                sandbox.remove()
 
     def resume(
         self,
@@ -270,6 +273,7 @@ class DevelopmentService:
         config = {"configurable": {"thread_id": run_id}}
         staging_authorization: _StagingAuthorization | None = None
         stage: Path | None = None
+        sandbox: StagingSandbox | None = None
         preserve_stage = False
         self._model = None
         self._planner = None
@@ -293,6 +297,7 @@ class DevelopmentService:
                 staging_parent = workspace / ".development-staging"
                 if stage.parent != staging_parent or not stage.is_dir():
                     return {"repository": str(repository), "status": "failed", "events": ["approval_staging_missing"]}
+                sandbox = StagingSandbox.attach(workspace, repository, stage)
                 lifecycle = _register_staging_copy(workspace, repository, stage)
                 staging_authorization = _create_staging_authorization(grant, repository, stage, lifecycle)
                 self._staging_authorization = staging_authorization
@@ -317,8 +322,8 @@ class DevelopmentService:
             self._run_grant = None
             self._staging_authorization = None
             _revoke_staging_authorization(staging_authorization)
-            if stage is not None and not preserve_stage:
-                self._remove_staging_copy(stage)
+            if sandbox is not None and not preserve_stage:
+                sandbox.remove()
 
     def _persist_run_record(self, workspace: Path, result: DevelopmentState) -> None:
         record = DevelopmentRunRecord.capture(

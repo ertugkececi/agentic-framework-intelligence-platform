@@ -546,9 +546,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7D — Detached Git worktree staging — COMPLETE
+
+Delivered:
+
+- Service-owned staging sandbox lifecycle abstraction
+- Clean Git repositories executed in detached disposable worktrees pinned to `HEAD`
+- Non-Git and dirty-repository compatibility through the existing disposable-copy backend
+- Canonical workspace and repository boundary checks before staging creation
+- Symlink and nested-workspace rejection before repository copying
+- Worktree registration pruning and staging-directory cleanup after terminal runs
+- Development-service integration proving build execution occurs in the detached worktree
+
+Verification:
+
+```text
+RED: staging sandbox module import failed during focused test collection
+focused sandbox and safe-execution tests: 28 passed, 1 warning
+complete suite: 226 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Sandboxed worktrees/containers
+- Container-backed command execution
 - Tenant boundaries and RBAC
 - Secret references, egress policy and redaction
 - Resource and time quotas
