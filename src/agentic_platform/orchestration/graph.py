@@ -43,6 +43,7 @@ from agentic_platform.security.policy import (
 from agentic_platform.tasks.parser import TaskParseError, parse_development_task
 from agentic_platform.tasks.types import DevelopmentTask, GeneratedChange
 from agentic_platform.tools.changes import ChangeValidationError, apply_change
+from agentic_platform.tools.container_execution import ContainerCommandRunner
 from agentic_platform.tools.repository_tools import (
     DEFAULT_COMMAND_TIMEOUT_SECONDS,
     DEFAULT_MAX_COMMAND_OUTPUT,
@@ -130,6 +131,7 @@ class DevelopmentService:
         approval_policy_factory: Callable[[], HumanApprovalPolicy] = NoHumanApprovalRequired,
         build_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
         test_runner: Callable[[Path, CapabilityGrant], CommandResult] | None = None,
+        container_runner: ContainerCommandRunner | None = None,
         validator: Callable[[Path, list[FrameworkRule]], ValidationReport] = validate_service,
         max_failure_output: int = DEFAULT_MAX_FAILURE_OUTPUT,
         command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
@@ -137,6 +139,8 @@ class DevelopmentService:
     ) -> None:
         if max_failure_output < 1 or command_timeout_seconds <= 0 or max_command_output < 1:
             raise ValueError("failure output, command timeout, and command output limits must be positive")
+        if container_runner is not None and (build_runner is not None or test_runner is not None):
+            raise ValueError("container_runner cannot be combined with host command runners")
         self._model_factory = model_factory
         self._planner_factory = planner_factory
         self._reviewer_factory = reviewer_factory
@@ -149,6 +153,7 @@ class DevelopmentService:
         self._staging_authorization: _StagingAuthorization | None = None
         self._build_runner = build_runner
         self._test_runner = test_runner
+        self._container_runner = container_runner
         self._validator = validator
         self._max_failure_output = max_failure_output
         self._command_timeout_seconds = command_timeout_seconds
@@ -589,17 +594,29 @@ class DevelopmentService:
         return "final" if state.get("status") == "failed" else "build"
 
     def _build(self, state: DevelopmentState) -> dict[str, CommandResult]:
-        runner = self._build_runner or partial(
-            run_build, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
-            staging_authorization=self._active_staging_authorization(),
-        )
+        if self._container_runner is not None:
+            runner = partial(
+                self._container_runner.run_build,
+                staging_authorization=self._active_staging_authorization(),
+            )
+        else:
+            runner = self._build_runner or partial(
+                run_build, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
+                staging_authorization=self._active_staging_authorization(),
+            )
         return {"build_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
 
     def _tests(self, state: DevelopmentState) -> dict[str, CommandResult]:
-        runner = self._test_runner or partial(
-            run_tests, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
-            staging_authorization=self._active_staging_authorization(),
-        )
+        if self._container_runner is not None:
+            runner = partial(
+                self._container_runner.run_tests,
+                staging_authorization=self._active_staging_authorization(),
+            )
+        else:
+            runner = self._test_runner or partial(
+                run_tests, timeout_seconds=self._command_timeout_seconds, max_output_chars=self._max_command_output,
+                staging_authorization=self._active_staging_authorization(),
+            )
         return {"test_result": self._run_command(runner, Path(state["staging_repository"]), self._active_grant())}
 
     def _run_command(self, runner: Callable[[Path, CapabilityGrant], CommandResult], repository: Path, grant: CapabilityGrant) -> CommandResult:

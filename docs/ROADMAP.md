@@ -570,9 +570,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7E — Container-backed command execution — COMPLETE
+
+Delivered:
+
+- Immutable Docker/Podman execution configuration with digest-pinned OCI images
+- Fixed build and test commands with explicit entrypoint replacement
+- Network-disabled, read-only-root containers with all Linux capabilities dropped
+- No-new-privileges, CPU, memory, PID, timeout and output bounds
+- Exact disposable staging bind mount with service-issued authorization enforcement
+- Capability and repository checks before runtime discovery or process execution
+- Development-service integration with host/container runner conflict rejection
+- Fail-closed invalid runtime, image, mount and configuration handling
+
+Verification:
+
+```text
+RED: container execution module import failed; DevelopmentService rejected the container runner contract
+focused container/sandbox/safe-execution tests: 41 passed, 1 warning
+complete suite: 239 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Container-backed command execution
 - Tenant boundaries and RBAC
 - Secret references, egress policy and redaction
 - Resource and time quotas
