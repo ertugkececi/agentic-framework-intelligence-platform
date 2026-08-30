@@ -1,12 +1,15 @@
 # On-prem Kubernetes deployment
 
 This base deploys the API, PostgreSQL 16, Qdrant, an OpenTelemetry
-Collector, and a durable Prometheus metrics backend into the dedicated
-`framework-intelligence` namespace. Services are cluster-private, persistent,
+Collector, durable Prometheus metrics, and durable Tempo traces backends into
+the dedicated `framework-intelligence` namespace. Services are cluster-private, persistent,
 and protected by default-deny network policies. The API exports OTLP only to the
 collector through explicit pod-to-pod network policy rules. Prometheus scrapes the
 collector's metrics endpoint through a dedicated least-privilege policy, retains
 15 days of metrics on its own persistent volume, and has no API or database access.
+The collector sends traces over namespace-local OTLP to Tempo, which retains 14 days
+of trace blocks on its own persistent volume and accepts ingestion only from the
+collector.
 
 Provision the referenced secret outside Git before applying the base:
 

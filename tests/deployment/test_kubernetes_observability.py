@@ -153,3 +153,84 @@ def test_prometheus_network_access_is_least_privilege() -> None:
         and rule.get("ports") == [{"protocol": "TCP", "port": 8889}]
         for rule in collector_ingress
     )
+
+
+def test_tempo_durably_receives_collector_traces() -> None:
+    manifests = _manifests()
+    collector_config = manifests[("ConfigMap", "otel-collector-config")]["data"][
+        "config.yaml"
+    ]
+    tempo_config = manifests[("ConfigMap", "tempo-config")]["data"]["tempo.yaml"]
+    stateful_set = manifests[("StatefulSet", "tempo")]
+    service = manifests[("Service", "tempo")]
+    pod = stateful_set["spec"]["template"]["spec"]
+    container = pod["containers"][0]
+
+    assert "endpoint: tempo:4317" in collector_config
+    assert "exporters: [otlp/tempo]" in collector_config
+    assert "backend: local" in tempo_config
+    assert service["spec"]["type"] == "ClusterIP"
+    assert {port["port"] for port in service["spec"]["ports"]} == {3200, 4317}
+    assert stateful_set["spec"]["volumeClaimTemplates"][0]["spec"][
+        "resources"
+    ]["requests"]["storage"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert "@sha256:" in container["image"]
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/ready",
+        "port": "http",
+    }
+    assert container["resources"]["requests"]
+    assert container["resources"]["limits"]
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+
+def test_tempo_network_access_is_collector_only() -> None:
+    manifests = _manifests()
+    policies = {
+        name: manifest
+        for (kind, name), manifest in manifests.items()
+        if kind == "NetworkPolicy"
+    }
+    collector_egress = policies["otel-collector-egress"]["spec"]
+    assert collector_egress["egress"] == [
+        {
+            "to": [{"namespaceSelector": {}}],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        },
+        {
+            "to": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "tempo",
+                            "app.kubernetes.io/component": "traces",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 4317}],
+        }
+    ]
+    tempo_ingress = policies["tempo-access"]["spec"]
+    assert tempo_ingress["ingress"] == [
+        {
+            "from": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "otel-collector",
+                            "app.kubernetes.io/component": "observability",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 4317}],
+        }
+    ]

@@ -907,9 +907,32 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 findings
 ~~~
 
+### Milestone 8J — Durable Tempo traces backend — COMPLETE
+
+Delivered:
+
+- Cluster-private Tempo StatefulSet with persistent local trace-block and WAL storage
+- Fourteen-day trace retention with explicit CPU and memory resources
+- OpenTelemetry Collector OTLP export to the namespace-local Tempo endpoint
+- Digest-pinned multi-architecture Tempo image with non-root, read-only runtime
+- Dedicated DNS and Tempo-only collector egress with matching ingestion ingress
+- Default-deny preservation with no API, database or external network access
+
+Verification:
+
+~~~text
+RED: Tempo resource, durable trace export, and network-policy assertions failed
+focused Kubernetes deployment/observability tests: 10 passed
+complete suite: 292 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Durable Tempo/Loki/Grafana observability backends
+- Durable Loki/Grafana observability backends
 - Production Kubernetes overlays
 
 

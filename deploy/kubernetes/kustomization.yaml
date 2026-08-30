@@ -11,3 +11,4 @@ resources:
   - network-policy.json
   - observability.json
   - prometheus.json
+  - tempo.json
