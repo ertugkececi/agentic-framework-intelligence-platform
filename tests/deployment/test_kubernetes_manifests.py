@@ -33,6 +33,7 @@ def test_kustomization_declares_complete_on_prem_stack() -> None:
         "qdrant.json",
         "network-policy.json",
         "observability.json",
+        "prometheus.json",
     }
 
 

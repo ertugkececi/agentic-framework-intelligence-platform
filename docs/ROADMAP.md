@@ -883,9 +883,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 findings
 ~~~
 
+### Milestone 8I — Durable Prometheus metrics backend — COMPLETE
+
+Delivered:
+
+- Cluster-private Prometheus StatefulSet with persistent TSDB storage
+- Bounded 15-day metrics retention and explicit CPU/memory resources
+- Static namespace-local scraping of the collector's Prometheus endpoint
+- Health-checked, non-root, read-only-root-filesystem runtime
+- Service-account token disabled and Linux capabilities dropped
+- Dedicated DNS and collector-only egress with matching scrape ingress
+- No API, PostgreSQL, Qdrant or external network access
+
+Verification:
+
+~~~text
+RED: Prometheus resource, durable scrape, and network-policy assertions failed
+focused Kubernetes deployment/observability tests: 8 passed
+complete suite: 290 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 findings
+~~~
+
 Remaining:
 
-- Durable Prometheus/Tempo/Loki/Grafana observability backends
+- Durable Tempo/Loki/Grafana observability backends
 - Production Kubernetes overlays
 
 

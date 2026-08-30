@@ -48,7 +48,15 @@ def test_api_telemetry_egress_is_explicitly_allowlisted() -> None:
 
     collector_access = manifests[("NetworkPolicy", "otel-collector-access")]
     ingress = collector_access["spec"]["ingress"]
-    assert {port["port"] for rule in ingress for port in rule["ports"]} == {4317, 4318}
+    api_ingress = next(
+        rule
+        for rule in ingress
+        if rule["from"][0]["podSelector"]["matchLabels"].get(
+            "app.kubernetes.io/name"
+        )
+        == "agentic-platform"
+    )
+    assert {port["port"] for port in api_ingress["ports"]} == {4317, 4318}
     assert ingress[0]["from"][0]["podSelector"]["matchLabels"] == {
         "app.kubernetes.io/name": "agentic-platform",
         "app.kubernetes.io/component": "api",
@@ -64,3 +72,84 @@ def test_api_telemetry_egress_is_explicitly_allowlisted() -> None:
         "app.kubernetes.io/name": "otel-collector",
         "app.kubernetes.io/component": "observability",
     }
+
+
+def test_prometheus_durably_scrapes_the_collector() -> None:
+    manifests = _manifests()
+    config = manifests[("ConfigMap", "prometheus-config")]["data"][
+        "prometheus.yml"
+    ]
+    stateful_set = manifests[("StatefulSet", "prometheus")]
+    service = manifests[("Service", "prometheus")]
+    container = stateful_set["spec"]["template"]["spec"]["containers"][0]
+
+    assert "otel-collector:8889" in config
+    assert "scrape_interval: 30s" in config
+    assert service["spec"]["type"] == "ClusterIP"
+    assert service["spec"]["ports"][0]["port"] == 9090
+    assert stateful_set["spec"]["volumeClaimTemplates"][0]["spec"][
+        "resources"
+    ]["requests"]["storage"]
+    assert "--storage.tsdb.retention.time=15d" in container["args"]
+    assert container["readinessProbe"]["httpGet"] == {
+        "path": "/-/ready",
+        "port": "http",
+    }
+    pod = stateful_set["spec"]["template"]["spec"]
+    assert pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    assert container["securityContext"]["allowPrivilegeEscalation"] is False
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"]["drop"] == ["ALL"]
+
+
+def test_prometheus_network_access_is_least_privilege() -> None:
+    manifests = _manifests()
+    policies = {
+        name: manifest
+        for (kind, name), manifest in manifests.items()
+        if kind == "NetworkPolicy"
+    }
+
+    scrape = policies["prometheus-egress"]["spec"]
+    assert scrape["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == (
+        "prometheus"
+    )
+    assert scrape["egress"] == [
+        {
+            "to": [{"namespaceSelector": {}}],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        },
+        {
+            "to": [
+                {
+                    "podSelector": {
+                        "matchLabels": {
+                            "app.kubernetes.io/name": "otel-collector",
+                            "app.kubernetes.io/component": "observability",
+                        }
+                    }
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8889}],
+        },
+    ]
+    collector_ingress = policies["otel-collector-access"]["spec"]["ingress"]
+    assert any(
+        rule.get("from")
+        == [
+            {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "prometheus",
+                        "app.kubernetes.io/component": "metrics",
+                    }
+                }
+            }
+        ]
+        and rule.get("ports") == [{"protocol": "TCP", "port": 8889}]
+        for rule in collector_ingress
+    )
