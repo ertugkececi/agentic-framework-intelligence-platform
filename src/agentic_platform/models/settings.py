@@ -6,6 +6,8 @@ from os import environ
 from typing import Mapping
 from urllib.parse import urlparse
 
+from agentic_platform.security.secrets import SecretReference
+
 
 @dataclass(frozen=True)
 class OpenAICompatibleSettings:
@@ -21,6 +23,7 @@ class OpenAICompatibleSettings:
     model: str
     api_key: str | None = None
     timeout_seconds: float = 60.0
+    api_key_reference: SecretReference | None = None
 
     def __post_init__(self) -> None:
         parsed = urlparse(self.base_url)
@@ -30,6 +33,10 @@ class OpenAICompatibleSettings:
             raise ValueError("model must not be empty")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero")
+        if self.api_key_reference is not None and not isinstance(self.api_key_reference, SecretReference):
+            raise TypeError("api_key_reference must be a SecretReference")
+        if self.api_key and self.api_key_reference is not None:
+            raise ValueError("api_key and api_key_reference cannot be combined")
 
     @property
     def chat_completions_url(self) -> str:

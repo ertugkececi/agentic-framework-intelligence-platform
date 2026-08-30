@@ -642,9 +642,33 @@ customer-symbol leak scan: 0 match
 security pattern scan: 0 match
 ```
 
+### Milestone 7H — Secret resolution and egress enforcement — COMPLETE
+
+Delivered:
+
+- Provider-neutral secret resolver port accepting identifier-only references
+- Fail-closed resolved-value validation and sanitized provider failures
+- Exact-origin HTTP(S) egress policy with canonical origin validation
+- Egress authorization before secret resolution or transport access
+- OpenAI-compatible model integration resolving credentials only at the transport boundary
+- Secret values excluded from model prompt bodies
+- Backward-compatible direct-key support with mixed credential configuration rejection
+- Composition-root injection for secret resolvers and egress policies
+
+Verification:
+
+```text
+RED: secret resolution and egress policy module import failed during focused test collection
+focused secret-resolution/redaction/model tests: 21 passed
+complete suite: 254 passed, 1 warning
+python -m compileall -q src: PASS
+git diff --check: PASS
+customer-symbol leak scan: 0 match
+security pattern scan: 0 match
+```
+
 ### Remaining Milestone 7 slices
 
-- Secret resolution boundary and egress policy enforcement
 - Resource and time quotas
 
 ## Milestone 8 — Model gateway, observability and deployment

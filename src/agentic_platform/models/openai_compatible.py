@@ -13,6 +13,7 @@ from agentic_platform.models.gateway import CodingModel, CodingModelError, Failu
 from agentic_platform.models.prompt import build_coding_messages, build_repair_messages
 from agentic_platform.models.settings import OpenAICompatibleSettings
 from agentic_platform.tasks.types import DevelopmentTask, FileChange, GeneratedChange
+from agentic_platform.security.secret_resolution import EgressPolicy, SecretResolver, resolve_secret
 
 
 class ModelTimeoutError(CodingModelError):
@@ -88,9 +89,18 @@ def parse_generated_change(content: str) -> GeneratedChange:
 class OpenAICompatibleCodingModel(CodingModel):
     """Generate typed changes through any OpenAI Chat Completions-compatible API."""
 
-    def __init__(self, settings: OpenAICompatibleSettings, transport: HttpTransport | None = None) -> None:
+    def __init__(
+        self,
+        settings: OpenAICompatibleSettings,
+        transport: HttpTransport | None = None,
+        *,
+        secret_resolver: SecretResolver | None = None,
+        egress_policy: EgressPolicy | None = None,
+    ) -> None:
         self._settings = settings
         self._transport = transport or UrllibHttpTransport()
+        self._secret_resolver = secret_resolver
+        self._egress_policy = egress_policy or EgressPolicy.for_url(settings.base_url)
 
     def generate_change(self, task: DevelopmentTask, context: CodingContext) -> GeneratedChange:
         return self._request_change(build_coding_messages(task, context))
@@ -112,11 +122,16 @@ class OpenAICompatibleCodingModel(CodingModel):
             "response_format": {"type": "json_object"},
         }
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        if self._settings.api_key:
-            headers["Authorization"] = f"Bearer {self._settings.api_key}"
+        endpoint = self._settings.chat_completions_url
+        self._egress_policy.require_url(endpoint)
+        api_key = self._settings.api_key
+        if self._settings.api_key_reference is not None:
+            api_key = resolve_secret(self._settings.api_key_reference, self._secret_resolver)
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         try:
             response = self._transport.post(
-                self._settings.chat_completions_url,
+                endpoint,
                 headers,
                 json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                 self._settings.timeout_seconds,
