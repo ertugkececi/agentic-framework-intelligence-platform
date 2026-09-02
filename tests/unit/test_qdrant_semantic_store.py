@@ -7,7 +7,7 @@ from uuid import UUID
 import pytest
 
 from agentic_platform.domain.models import KnowledgeScope
-from agentic_platform.retrieval.qdrant_store import QdrantSemanticStore
+from agentic_platform.retrieval.qdrant_store import QdrantHttpError, QdrantSemanticStore
 from agentic_platform.retrieval.semantic_chunks import SemanticChunk
 from agentic_platform.retrieval.semantic_store import SemanticVectorStore
 from agentic_platform.security.policy import Capability, CapabilityGrant, local_principal
@@ -25,6 +25,20 @@ class RecordingTransport:
     def request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         self.calls.append((method, path, payload))
         return {"status": "ok"}
+
+
+class ExistingCollectionTransport(RecordingTransport):
+    def __init__(self, vector_size: int) -> None:
+        super().__init__()
+        self.vector_size = vector_size
+
+    def request(self, method: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self.calls.append((method, path, payload))
+        if method == "PUT" and path == "/collections/chunks":
+            raise QdrantHttpError(409)
+        return {
+            "result": {"config": {"params": {"vectors": {"size": self.vector_size}}}}
+        }
 
 
 def scope(module: str | None = "api") -> KnowledgeScope:
@@ -64,6 +78,27 @@ def test_qdrant_adapter_satisfies_port_and_upserts_scoped_payload() -> None:
     assert point["payload"]["start_line"] == 1
 
 
+def test_qdrant_collection_initialization_accepts_existing_matching_collection() -> None:
+    transport = ExistingCollectionTransport(vector_size=3)
+
+    QdrantSemanticStore(
+        transport, grant=database_grant(), collection_name="chunks", vector_size=3
+    )
+
+    assert transport.calls == [
+        ("PUT", "/collections/chunks", {"vectors": {"size": 3, "distance": "Cosine"}}),
+        ("GET", "/collections/chunks", {}),
+    ]
+
+
+def test_qdrant_collection_initialization_rejects_existing_wrong_dimension() -> None:
+    with pytest.raises(ValueError, match="dimension"):
+        QdrantSemanticStore(
+            ExistingCollectionTransport(vector_size=4),
+            grant=database_grant(), collection_name="chunks", vector_size=3,
+        )
+
+
 def test_qdrant_delete_source_is_scope_filtered_and_null_safe() -> None:
     transport = RecordingTransport()
     store = QdrantSemanticStore(transport, grant=database_grant(), collection_name="chunks", vector_size=2)
@@ -80,6 +115,27 @@ def test_qdrant_delete_source_is_scope_filtered_and_null_safe() -> None:
         "source_path": "docs/guide.md",
     }
     assert {"is_null": {"key": "module_id"}} in must
+
+
+def test_qdrant_replaces_source_chunks_in_one_scope_filtered_batch() -> None:
+    transport = RecordingTransport()
+    store = QdrantSemanticStore(
+        transport, grant=database_grant(), collection_name="chunks", vector_size=3
+    )
+
+    store.replace_source_chunks(scope(), ((chunk(), (0.1, 0.2, 0.3)),))
+
+    method, path, body = transport.calls[-1]
+    assert (method, path) == ("POST", "/collections/chunks/points/batch?wait=true")
+    deletion, upsert = body["operations"]
+    must = deletion["delete"]["filter"]["must"]
+    matched = {entry["key"]: entry["match"]["value"] for entry in must if "match" in entry}
+    assert matched == {
+        "customer_id": "tenant", "framework_id": "framework",
+        "framework_version_id": "2.0", "project_id": "project",
+        "module_id": "api", "kind": "source",
+    }
+    assert upsert["upsert"]["points"][0]["payload"]["chunk_id"] == chunk().chunk_id
 
 
 def test_qdrant_rejects_invalid_vectors_and_unsafe_configuration_before_write() -> None:

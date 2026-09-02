@@ -24,6 +24,10 @@ class SemanticVectorStore(Protocol):
 
     def upsert(self, entries: Sequence[VectorEntry]) -> None: ...
 
+    def replace_source_chunks(
+        self, scope: KnowledgeScope, entries: Sequence[VectorEntry]
+    ) -> None: ...
+
     def delete_source(self, scope: KnowledgeScope, source_path: str) -> None: ...
 
     def search(

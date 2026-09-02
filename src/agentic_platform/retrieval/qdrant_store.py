@@ -20,6 +20,14 @@ from agentic_platform.retrieval.semantic_store import SemanticMatch, VectorEntry
 from agentic_platform.security.policy import Capability, CapabilityGrant
 
 
+class QdrantHttpError(RuntimeError):
+    """Sanitized Qdrant HTTP failure retaining only the response status."""
+
+    def __init__(self, status: int) -> None:
+        self.status = status
+        super().__init__(f"Qdrant request failed with HTTP {status}")
+
+
 class QdrantTransport(Protocol):
     """Minimal JSON transport boundary, injectable for on-prem clients."""
 
@@ -55,7 +63,7 @@ class QdrantHttpTransport:
             with urlopen(request, timeout=self._timeout) as response:  # nosec B310: URL validated above
                 decoded = json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
-            raise RuntimeError(f"Qdrant request failed with HTTP {exc.code}") from exc
+            raise QdrantHttpError(exc.code) from exc
         except URLError as exc:
             raise RuntimeError("Qdrant request failed") from exc
         if not isinstance(decoded, dict):
@@ -87,11 +95,22 @@ class QdrantSemanticStore:
         self._vector_size = vector_size
         if initialize_collection:
             self._grant.require(Capability.DATABASE_WRITE)
-            self._transport.request(
-                "PUT",
-                self._collection_path,
-                {"vectors": {"size": vector_size, "distance": "Cosine"}},
-            )
+            try:
+                self._transport.request(
+                    "PUT",
+                    self._collection_path,
+                    {"vectors": {"size": vector_size, "distance": "Cosine"}},
+                )
+            except QdrantHttpError as exc:
+                if exc.status != 409:
+                    raise
+                response = self._transport.request("GET", self._collection_path, {})
+                try:
+                    existing_size = response["result"]["config"]["params"]["vectors"]["size"]
+                except (KeyError, TypeError):
+                    raise RuntimeError("Qdrant collection response is malformed") from None
+                if existing_size != vector_size:
+                    raise ValueError("existing Qdrant collection vector dimension mismatch")
 
     @classmethod
     def from_url(
@@ -125,6 +144,13 @@ class QdrantSemanticStore:
         self._grant.require(Capability.DATABASE_WRITE)
         for chunk, _ in entries:
             self._grant.require_scope(chunk.scope)
+        points = self._points(entries)
+        if points:
+            self._transport.request(
+                "PUT", f"{self._collection_path}/points?wait=true", {"points": points}
+            )
+
+    def _points(self, entries: Sequence[VectorEntry]) -> list[dict[str, Any]]:
         points: list[dict[str, Any]] = []
         for chunk, raw_vector in entries:
             vector = self._validate_vector(raw_vector)
@@ -142,10 +168,32 @@ class QdrantSemanticStore:
                 "vector": vector,
                 "payload": payload,
             })
+        return points
+
+    def replace_source_chunks(
+        self, scope: KnowledgeScope, entries: Sequence[VectorEntry]
+    ) -> None:
+        """Replace every source point in exactly one authorized scope."""
+        self._grant.require(Capability.DATABASE_WRITE)
+        self._grant.require_scope(scope)
+        validated = tuple(entries)
+        for chunk, vector in validated:
+            if chunk.scope != scope or chunk.kind is not ChunkKind.SOURCE:
+                raise PermissionError("source replacement entry is outside the requested scope")
+            self._validate_vector(vector)
+        points = self._points(validated)
+        must = self._scope_filter(scope)
+        must.append({"key": "kind", "match": {"value": ChunkKind.SOURCE.value}})
+        operations: list[dict[str, Any]] = [
+            {"delete": {"filter": {"must": must}}}
+        ]
         if points:
-            self._transport.request(
-                "PUT", f"{self._collection_path}/points?wait=true", {"points": points}
-            )
+            operations.append({"upsert": {"points": points}})
+        self._transport.request(
+            "POST",
+            f"{self._collection_path}/points/batch?wait=true",
+            {"operations": operations},
+        )
 
     def search(
         self,

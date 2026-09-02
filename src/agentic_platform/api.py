@@ -14,7 +14,12 @@ from agentic_platform.framework_learning.learner import FrameworkLearner
 from agentic_platform.orchestration.checkpoints import PostgresCheckpointProvider
 from agentic_platform.orchestration.graph import DevelopmentService
 from agentic_platform.retrieval.assembly import assemble_coding_context
+from agentic_platform.retrieval.embeddings import DeterministicEmbedding
 from agentic_platform.retrieval.qdrant_store import QdrantSemanticStore
+from agentic_platform.retrieval.source_indexing import (
+    RepositorySemanticIndexer,
+    RepositorySourceChunkExtractor,
+)
 from agentic_platform.security.policy import Capability, CapabilityGrant, Principal, Role
 from agentic_platform.tasks.types import DevelopmentTask
 
@@ -130,6 +135,20 @@ def production_learn(request: LearnRequest, repository: Path) -> list[FrameworkR
     store = PostgresKnowledgeStore.from_dsn(POSTGRES_DSN, grant=grant)
     try:
         store.replace_rules(result.rules, repository_fingerprint(repository), scope=request.knowledge_scope)
+        semantic_store = QdrantSemanticStore.from_url(
+            QDRANT_URL,
+            grant=grant,
+            collection_name=QDRANT_COLLECTION,
+            vector_size=EMBEDDING_VECTOR_SIZE,
+            api_key=QDRANT_API_KEY,
+            initialize_collection=True,
+        )
+        RepositorySemanticIndexer(
+            grant=grant,
+            extractor=RepositorySourceChunkExtractor(grant=grant),
+            embedding=DeterministicEmbedding(EMBEDDING_VECTOR_SIZE),
+            store=semantic_store,
+        ).index(repository, request.knowledge_scope)
     finally:
         store.close()
     return result.rules
