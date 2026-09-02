@@ -138,6 +138,27 @@ def test_qdrant_replaces_source_chunks_in_one_scope_filtered_batch() -> None:
     assert upsert["upsert"]["points"][0]["payload"]["chunk_id"] == chunk().chunk_id
 
 
+def test_qdrant_replaces_source_chunks_in_bounded_batches() -> None:
+    transport = RecordingTransport()
+    store = QdrantSemanticStore(
+        transport, grant=database_grant(), collection_name="chunks", vector_size=3
+    )
+    entries = tuple((chunk(), (0.1, 0.2, 0.3)) for _ in range(129))
+
+    store.replace_source_chunks(scope(), entries)
+
+    writes = transport.calls[1:]
+    assert len(writes) == 2
+    first_method, first_path, first_body = writes[0]
+    assert (first_method, first_path) == ("POST", "/collections/chunks/points/batch?wait=true")
+    deletion, first_upsert = first_body["operations"]
+    assert "delete" in deletion
+    assert len(first_upsert["upsert"]["points"]) == 128
+    second_method, second_path, second_body = writes[1]
+    assert (second_method, second_path) == ("PUT", "/collections/chunks/points?wait=true")
+    assert len(second_body["points"]) == 1
+
+
 def test_qdrant_rejects_invalid_vectors_and_unsafe_configuration_before_write() -> None:
     transport = RecordingTransport()
     with pytest.raises(ValueError, match="collection_name"):

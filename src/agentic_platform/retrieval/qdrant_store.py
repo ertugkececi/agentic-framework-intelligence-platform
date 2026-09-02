@@ -20,6 +20,9 @@ from agentic_platform.retrieval.semantic_store import SemanticMatch, VectorEntry
 from agentic_platform.security.policy import Capability, CapabilityGrant
 
 
+_MAX_POINTS_PER_REQUEST = 128
+
+
 class QdrantHttpError(RuntimeError):
     """Sanitized Qdrant HTTP failure retaining only the response status."""
 
@@ -145,9 +148,11 @@ class QdrantSemanticStore:
         for chunk, _ in entries:
             self._grant.require_scope(chunk.scope)
         points = self._points(entries)
-        if points:
+        for offset in range(0, len(points), _MAX_POINTS_PER_REQUEST):
             self._transport.request(
-                "PUT", f"{self._collection_path}/points?wait=true", {"points": points}
+                "PUT",
+                f"{self._collection_path}/points?wait=true",
+                {"points": points[offset : offset + _MAX_POINTS_PER_REQUEST]},
             )
 
     def _points(self, entries: Sequence[VectorEntry]) -> list[dict[str, Any]]:
@@ -184,16 +189,20 @@ class QdrantSemanticStore:
         points = self._points(validated)
         must = self._scope_filter(scope)
         must.append({"key": "kind", "match": {"value": ChunkKind.SOURCE.value}})
-        operations: list[dict[str, Any]] = [
-            {"delete": {"filter": {"must": must}}}
-        ]
+        operations: list[dict[str, Any]] = [{"delete": {"filter": {"must": must}}}]
         if points:
-            operations.append({"upsert": {"points": points}})
+            operations.append({"upsert": {"points": points[:_MAX_POINTS_PER_REQUEST]}})
         self._transport.request(
             "POST",
             f"{self._collection_path}/points/batch?wait=true",
             {"operations": operations},
         )
+        for offset in range(_MAX_POINTS_PER_REQUEST, len(points), _MAX_POINTS_PER_REQUEST):
+            self._transport.request(
+                "PUT",
+                f"{self._collection_path}/points?wait=true",
+                {"points": points[offset : offset + _MAX_POINTS_PER_REQUEST]},
+            )
 
     def search(
         self,
