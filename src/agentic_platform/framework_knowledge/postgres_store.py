@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
@@ -99,9 +100,19 @@ class PostgresKnowledgeStore:
         self._grant = grant
         if initialize_schema:
             self._grant.require(Capability.DATABASE_WRITE)
-            with self.connection:
+            with self._transaction():
                 with self.connection.cursor() as cursor:
                     cursor.execute(_SCHEMA)
+
+    @contextmanager
+    def _transaction(self):
+        transaction = getattr(self.connection, "transaction", None)
+        if callable(transaction):
+            with transaction():
+                yield
+        else:  # DB-API test doubles and compatible drivers
+            with self.connection:
+                yield
 
     @classmethod
     def from_dsn(
@@ -138,7 +149,7 @@ class PostgresKnowledgeStore:
                 raise ValueError("rule scope does not match replacement scope")
             scoped_rules.append(replace(rule, scope=scope))
 
-        with self.connection:
+        with self._transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
                     """DELETE FROM framework_rule
@@ -173,7 +184,7 @@ class PostgresKnowledgeStore:
         """Append one immutable review event within its mandatory tenant scope."""
         self._grant.require(Capability.DATABASE_WRITE)
         self._grant.require_scope(review.scope)
-        with self.connection:
+        with self._transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
                     """INSERT INTO rule_review
@@ -232,7 +243,7 @@ class PostgresKnowledgeStore:
             target = RuleStatus(target_status)
         except ValueError as exc:
             raise ValueError("target_status must be a recognized rule lifecycle status") from exc
-        with self.connection:
+        with self._transaction():
             with self.connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT id, kind, expected_value, confidence, support_count,

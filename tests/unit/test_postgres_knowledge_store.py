@@ -251,3 +251,20 @@ def test_postgres_denies_cross_tenant_scope_before_transaction() -> None:
         ))
 
     assert connection.transactions == transactions_after_schema
+
+
+def test_postgres_uses_driver_transaction_without_closing_live_connection() -> None:
+    class PsycopgLikeConnection(RecordingConnection):
+        def __enter__(self):
+            raise AssertionError("connection context would close a psycopg connection")
+
+        @contextmanager
+        def transaction(self):
+            self.transactions += 1
+            yield self
+
+    connection = PsycopgLikeConnection()
+    store = PostgresKnowledgeStore(connection, grant=_database_grant())
+    store.replace_rules([_rule()], repository_identity="revision", scope=_scope())
+    assert connection.transactions == 2
+    assert connection.closed is False
